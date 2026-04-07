@@ -203,10 +203,19 @@ python -m pytest tests/test_core.py::TestSecurity -v
 
 ## 👨‍💻 Geliştirici
 
-**Oğuzhan** — [GitHub Profil](https://github.com/oguzh)
+**Oğuzhan** — [@callmeouz](https://github.com/callmeouz)
+
+Diğer projeler:
+- [vastarion-garage](https://github.com/callmeouz/vastarion-garage) — FastAPI araç yönetim sistemi
+- [vastarion-queue](https://github.com/callmeouz/vastarion-queue) — Mesaj kuyruk sistemi
 
 ---
 
 ## 📄 Lisans
 
-MIT License — Detaylar için [LICENSE](LICENSE) dosyasına bakın.
+Bu proje [MIT License](LICENSE) altında lisanslanmıştır.
+
+```
+MIT License — Copyright (c) 2026 Oğuzhan (callmeouz)
+Özgürce kullanın, değiştirin ve dağıtın.
+```
