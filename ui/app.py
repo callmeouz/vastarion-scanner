@@ -1,28 +1,29 @@
-# ui/app.py — Premium Dark UI
-# Design System: Premium Gold (#C6A96B) + Layered Surfaces
+# ui/app.py — Premium Dark/Light UI
+# Design System: Premium Gold + Layered Surfaces + Dual Theme
 
 import os
 import sys
 import queue
+import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import customtkinter as ctk
 from datetime import datetime
 
-from config import THEME, APP_NAME, APP_VERSION
+from config import (
+    THEME_DARK, THEME_LIGHT, APP_NAME, APP_VERSION,
+    get_active_theme_mode, set_theme_mode, get_active_theme,
+    ORGANIZER_TEMPLATES
+)
 from db.database import Database
 from core.search import SearchEngine
 from core.worker import IndexWorker
 from core.watcher import FileWatcher
 from core.parsers import extract_content
+from core.organizer import FileOrganizer, OrganizerRule, MIN_SCORE_THRESHOLD
 from utils.file_utils import format_size
 from utils.text_utils import tr_lower
 from logger import log
-
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
-
-T = THEME
 
 
 class VastarionApp(ctk.CTk):
@@ -30,10 +31,15 @@ class VastarionApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Tema — başlangıçta doğru modu ayarla
+        self._theme_mode = get_active_theme_mode()
+        self.T = THEME_DARK if self._theme_mode == "dark" else THEME_LIGHT
+        ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
+
         self.title(f"{APP_NAME} v{APP_VERSION}")
         self.geometry("1200x800")
         self.minsize(950, 650)
-        self.configure(fg_color=T["bg"])
+        self.configure(fg_color=self.T["bg"])
 
         self._set_icon()
 
@@ -46,6 +52,9 @@ class VastarionApp(ctk.CTk):
         self.watcher.on_change(lambda n: self.ui_queue.put(("watcher_update", n)))
         self.watcher.start()
 
+        # Organizer
+        self.organizer = FileOrganizer(self.db, self.ui_queue)
+
         self._search_after_id = None
         self._content_cache = {}
         self._result_paths = []
@@ -53,9 +62,15 @@ class VastarionApp(ctk.CTk):
         self._folder_hover_idx = None
         self._logo_refs = {}
 
+        # Organizer state
+        self._org_rule_widgets = []
+        self._org_target_dir = ctk.StringVar(value="")
+        self._org_include_unmatched = ctk.BooleanVar(value=True)
+
         self._build_ui()
         self._process_queue()
         self._update_stats()
+        self._apply_ctk_mode()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── Helpers ──────────────────────────────────────────
@@ -94,6 +109,236 @@ class VastarionApp(ctk.CTk):
             log.warning(f"Logo yuklenemedi: {e}")
             return None
 
+    def _apply_ctk_mode(self):
+        """CustomTkinter appearance mode'u ayarlar."""
+        ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
+
+    # ══════════════════════════════════════════════════════
+    # THEME TOGGLE
+    # ══════════════════════════════════════════════════════
+
+    def _toggle_theme(self):
+        """Dark <-> Light tema gecisi. Batch update ile hizlandirildi."""
+        if self._theme_mode == "dark":
+            self._theme_mode = "light"
+            self.T = THEME_LIGHT
+        else:
+            self._theme_mode = "dark"
+            self.T = THEME_DARK
+
+        set_theme_mode(self._theme_mode)
+
+        # Tum guncellemeleri tek seferde yap (batch)
+        # Once CTk mode'u degistir, sonra kendi renklerimizi uygula
+        self.withdraw()  # Pencereyi gizle — titresim onlenir
+        self._apply_ctk_mode()
+        self._refresh_all_theme()
+        self.deiconify()  # Pencereyi tekrar goster
+
+    def _refresh_all_theme(self):
+        """Tum widget'lari ve stilleri yeni temaya gore gunceller (batch)."""
+        T = self.T
+
+        # Ana pencere
+        self.configure(fg_color=T["bg"])
+
+        # Theme toggle button
+        icon = "☀" if self._theme_mode == "dark" else "🌙"
+        self.btn_theme.configure(
+            text=icon,
+            fg_color=T["surface2"],
+            hover_color=T["hover"],
+            text_color=T["gold"]
+        )
+
+        # Header
+        self._header_frame.configure(fg_color=T["bg"])
+        self.lbl_stats.configure(text_color=T["text_muted"])
+
+        # Search bar
+        self._search_frame.configure(
+            fg_color=T["surface"],
+            border_color=T["border"]
+        )
+        self.entry_search.configure(
+            text_color=T["text_primary"],
+            placeholder_text_color=T["text_muted"]
+        )
+        self.lbl_search_time.configure(text_color=T["text_muted"])
+
+        # Tabs — hem tab container hem ic paneller
+        self.tabs.configure(
+            fg_color=T["bg"],
+            segmented_button_fg_color=T["surface"],
+            segmented_button_selected_color=T["surface2"],
+            segmented_button_selected_hover_color=T["surface2"],
+            segmented_button_unselected_color=T["surface"],
+            segmented_button_unselected_hover_color=T["hover"],
+            text_color=T["text_secondary"],
+            text_color_disabled=T["text_muted"]
+        )
+        # Tab ic panellerinin arka plan rengini guncelle
+        for tab_name in ["Sonuclar", "Klasorler", "Duzenle", "Hakkinda"]:
+            try:
+                tab = self.tabs.tab(tab_name)
+                tab.configure(fg_color=T["bg"])
+            except Exception:
+                pass
+
+        # CTkTabview'in ic _segmented_button ve _tab parcalarini da guncelle
+        try:
+            for child in self.tabs.winfo_children():
+                try:
+                    child.configure(fg_color=T["bg"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Kart arka planlarini guncelle
+        treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
+
+        self._tree_card.configure(fg_color=T["surface"], border_color=T["border"])
+        self._preview_card.configure(fg_color=T["surface"], border_color=T["border"])
+        self._folder_list_card.configure(fg_color=T["surface"], border_color=T["border"])
+
+        # Treeview style — tek seferde guncelle
+        style = ttk.Style()
+        style.configure("V.Treeview",
+            background=T["surface"],
+            foreground=T["text_primary"],
+            fieldbackground=T["surface"])
+        style.configure("V.Treeview.Heading",
+            background=T["surface2"],
+            foreground=T["text_secondary"])
+        style.map("V.Treeview",
+            background=[("selected", treeview_select_bg)],
+            foreground=[("selected", T["gold_light"])])
+
+        # Result count
+        self.lbl_result_count.configure(text_color=T["text_muted"])
+
+        # Preview
+        self.txt_preview.configure(
+            fg_color=T["surface2"],
+            text_color=T["text_secondary"]
+        )
+
+        # Hover tags
+        self.tree.tag_configure("hover",
+            background=T["hover"], foreground=T["gold_light"])
+        self.tree.tag_configure("normal",
+            background=T["surface"], foreground=T["text_primary"])
+
+        # Folder listbox
+        self.folder_listbox.configure(
+            bg=T["surface"], fg=T["text_primary"],
+            selectbackground=treeview_select_bg,
+            selectforeground=T["gold"]
+        )
+
+        # Scan butonu
+        self.btn_scan.configure(
+            fg_color=T["gold"], hover_color=T["gold_light"],
+            text_color=T["bg"]
+        )
+
+        # Progress
+        self.progress.configure(
+            fg_color=T["surface2"],
+            progress_color=T["gold"]
+        )
+        self.lbl_progress.configure(text_color=T["text_muted"])
+
+        # Context menu
+        self.ctx_menu.configure(
+            bg=T["surface2"], fg=T["text_primary"],
+            activebackground=T["hover"], activeforeground=T["gold"]
+        )
+
+        # Status bar
+        self._status_frame.configure(fg_color=T["surface"])
+        self.lbl_status.configure(text_color=T["text_muted"])
+        self.lbl_watcher.configure(text_color=T["success"])
+
+        # About tab
+        self.info_text.configure(
+            fg_color=T["surface"],
+            text_color=T["text_secondary"],
+            border_color=T["border"]
+        )
+
+        # Organizer tab
+        self._refresh_organizer_theme()
+
+        # Treeview satirlarini yeniden renklendir (varsa)
+        for item in self.tree.get_children():
+            if item not in self.tree.selection():
+                self.tree.item(item, tags=("normal",))
+
+
+    def _refresh_organizer_theme(self):
+        """Organizer sekmesinin renklerini günceller."""
+        T = self.T
+        try:
+            self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
+            self._org_target_entry.configure(
+                text_color=T["text_primary"],
+                placeholder_text_color=T["text_muted"]
+            )
+            self._org_rules_scroll_frame.configure(fg_color=T["surface"], border_color=T["border"])
+            self._org_rules_scrollable.configure(fg_color="transparent")
+            self._org_preview_frame.configure(fg_color=T["surface"], border_color=T["border"])
+            self._org_progress_bar.configure(fg_color=T["surface2"], progress_color=T["gold"])
+            self._org_status_label.configure(text_color=T["text_muted"])
+
+            # Butonlar
+            self._org_btn_preview.configure(
+                fg_color=T["surface2"], hover_color=T["hover"],
+                text_color=T["text_primary"], border_color=T["border"]
+            )
+            self._org_btn_execute.configure(
+                fg_color=T["gold"], hover_color=T["gold_light"],
+                text_color=T["bg"]
+            )
+
+            # Kural widget'larının renklerini güncelle
+            for widgets in self._org_rule_widgets:
+                widgets["frame"].configure(fg_color=T["surface2"], border_color=T["border"])
+                widgets["folder_entry"].configure(
+                    fg_color=T["surface"], text_color=T["text_primary"],
+                    border_color=T["border"]
+                )
+                widgets["keywords_entry"].configure(
+                    fg_color=T["surface"], text_color=T["text_primary"],
+                    border_color=T["border"]
+                )
+
+            # Onizleme treeview
+            treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
+            style = ttk.Style()
+            style.configure("Org.Treeview",
+                background=T["surface"],
+                foreground=T["text_primary"],
+                fieldbackground=T["surface"])
+            style.configure("Org.Treeview.Heading",
+                background=T["surface2"],
+                foreground=T["text_secondary"])
+            style.map("Org.Treeview",
+                background=[("selected", treeview_select_bg)],
+                foreground=[("selected", T["gold_light"])])
+
+            # Guvenilirlik renkleri tema'ya gore guncelle
+            self._org_tree.tag_configure("conf_high",
+                foreground=T["success"])
+            self._org_tree.tag_configure("conf_medium",
+                foreground=T["warning"])
+            self._org_tree.tag_configure("conf_unmatched",
+                foreground=T["text_muted"])
+
+        except Exception:
+            pass  # Widget'lar henuz olusturulmamis olabilir
+
     # ══════════════════════════════════════════════════════
     # BUILD UI
     # ══════════════════════════════════════════════════════
@@ -110,13 +355,14 @@ class VastarionApp(ctk.CTk):
     # ── HEADER ───────────────────────────────────────────
 
     def _build_header(self):
-        header = ctk.CTkFrame(self, fg_color=T["bg"], corner_radius=0, height=120)
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-        header.grid_propagate(False)
+        T = self.T
+        self._header_frame = ctk.CTkFrame(self, fg_color=T["bg"], corner_radius=0, height=120)
+        self._header_frame.grid(row=0, column=0, sticky="ew")
+        self._header_frame.grid_columnconfigure(1, weight=1)
+        self._header_frame.grid_propagate(False)
 
         # Brand: Logo + Text
-        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand = ctk.CTkFrame(self._header_frame, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="w", padx=32, pady=16)
 
         logo = self._load_logo(100)
@@ -143,22 +389,38 @@ class VastarionApp(ctk.CTk):
             text_color=T["text_muted"]
         ).pack(anchor="w")
 
-        # Sag: Stats
+        # Sağ: Stats + Theme Toggle
+        right_frame = ctk.CTkFrame(self._header_frame, fg_color="transparent")
+        right_frame.grid(row=0, column=1, sticky="e", padx=32)
+
         self.lbl_stats = ctk.CTkLabel(
-            header, text="",
+            right_frame, text="",
             font=ctk.CTkFont(family="Consolas", size=12),
             text_color=T["text_muted"]
         )
-        self.lbl_stats.grid(row=0, column=1, sticky="e", padx=32)
+        self.lbl_stats.pack(side="left", padx=(0, 16))
+
+        # Tema toggle butonu
+        theme_icon = "☀" if self._theme_mode == "dark" else "🌙"
+        self.btn_theme = ctk.CTkButton(
+            right_frame, text=theme_icon,
+            font=ctk.CTkFont(size=18),
+            fg_color=T["surface2"], hover_color=T["hover"],
+            text_color=T["gold"], corner_radius=8,
+            width=42, height=42,
+            command=self._toggle_theme
+        )
+        self.btn_theme.pack(side="left")
 
         # Border bottom
         tk.Canvas(
-            header, height=1, bg=T["bg"], highlightthickness=0
+            self._header_frame, height=1, bg=T["bg"], highlightthickness=0
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
     # ── SEARCH BAR ───────────────────────────────────────
 
     def _build_search_bar(self):
+        T = self.T
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.grid(row=1, column=0, sticky="ew", padx=32, pady=(16, 0))
         wrap.grid_columnconfigure(0, weight=1)
@@ -191,9 +453,9 @@ class VastarionApp(ctk.CTk):
 
         # Focus: gold border
         self.entry_search.bind("<FocusIn>",
-            lambda e: self._search_frame.configure(border_color=T["gold"]))
+            lambda e: self._search_frame.configure(border_color=self.T["gold"]))
         self.entry_search.bind("<FocusOut>",
-            lambda e: self._search_frame.configure(border_color=T["border"]))
+            lambda e: self._search_frame.configure(border_color=self.T["border"]))
 
         self.lbl_search_time = ctk.CTkLabel(
             self._search_frame, text="",
@@ -205,6 +467,7 @@ class VastarionApp(ctk.CTk):
     # ── MAIN AREA (TABS) ────────────────────────────────
 
     def _build_main_area(self):
+        T = self.T
         self.tabs = ctk.CTkTabview(
             self, fg_color=T["bg"],
             segmented_button_fg_color=T["surface"],
@@ -220,11 +483,13 @@ class VastarionApp(ctk.CTk):
 
         self._build_results_tab(self.tabs.add("Sonuclar"))
         self._build_folders_tab(self.tabs.add("Klasorler"))
+        self._build_organizer_tab(self.tabs.add("Duzenle"))
         self._build_about_tab(self.tabs.add("Hakkinda"))
 
     # ── RESULTS TAB ──────────────────────────────────────
 
     def _build_results_tab(self, parent):
+        T = self.T
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
@@ -236,17 +501,18 @@ class VastarionApp(ctk.CTk):
         self.lbl_result_count.grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         # Treeview Card — surface bg + border = depth
-        tree_card = ctk.CTkFrame(
+        self._tree_card = ctk.CTkFrame(
             parent, fg_color=T["surface"], corner_radius=8,
             border_width=1, border_color=T["border"]
         )
-        tree_card.grid(row=1, column=0, sticky="nsew")
-        tree_card.grid_columnconfigure(0, weight=1)
-        tree_card.grid_rowconfigure(0, weight=1)
+        self._tree_card.grid(row=1, column=0, sticky="nsew")
+        self._tree_card.grid_columnconfigure(0, weight=1)
+        self._tree_card.grid_rowconfigure(0, weight=1)
 
         # Treeview style — design system colors
         style = ttk.Style()
         style.theme_use("clam")
+        treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
         style.configure("V.Treeview",
             background=T["surface"],
             foreground=T["text_primary"],
@@ -260,7 +526,7 @@ class VastarionApp(ctk.CTk):
             font=("Segoe UI", 9, "bold"),
             borderwidth=0, relief="flat")
         style.map("V.Treeview",
-            background=[("selected", "#2A2518")],    # Warm gold-tinted select
+            background=[("selected", treeview_select_bg)],
             foreground=[("selected", T["gold_light"])])
         style.layout("V.Treeview", [
             ("V.Treeview.treearea", {"sticky": "nswe"})
@@ -268,7 +534,7 @@ class VastarionApp(ctk.CTk):
 
         cols = ("filename", "snippet", "directory", "ext", "size")
         self.tree = ttk.Treeview(
-            tree_card, columns=cols, show="headings",
+            self._tree_card, columns=cols, show="headings",
             selectmode="browse", style="V.Treeview"
         )
 
@@ -290,7 +556,7 @@ class VastarionApp(ctk.CTk):
         self.tree.tag_configure("normal",
             background=T["surface"], foreground=T["text_primary"])
 
-        scrollbar = ctk.CTkScrollbar(tree_card, command=self.tree.yview)
+        scrollbar = ctk.CTkScrollbar(self._tree_card, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         scrollbar.grid(row=0, column=1, sticky="ns", pady=2)
@@ -314,21 +580,21 @@ class VastarionApp(ctk.CTk):
         self.ctx_menu.add_command(label="Yolu Kopyala", command=self._copy_path)
 
         # Preview Card
-        preview_card = ctk.CTkFrame(
+        self._preview_card = ctk.CTkFrame(
             parent, fg_color=T["surface"], corner_radius=8,
             border_width=1, border_color=T["border"], height=140
         )
-        preview_card.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        preview_card.grid_columnconfigure(0, weight=1)
+        self._preview_card.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self._preview_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            preview_card, text="ONIZLEME",
+            self._preview_card, text="ONIZLEME",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=T["text_muted"]
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 0))
 
         self.txt_preview = ctk.CTkTextbox(
-            preview_card, height=90,
+            self._preview_card, height=90,
             font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=T["surface2"], text_color=T["text_secondary"],
             corner_radius=6, border_width=0, wrap="word"
@@ -339,6 +605,7 @@ class VastarionApp(ctk.CTk):
     # ── FOLDERS TAB ──────────────────────────────────────
 
     def _build_folders_tab(self, parent):
+        T = self.T
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
@@ -374,18 +641,19 @@ class VastarionApp(ctk.CTk):
         ).pack(side="right")
 
         # Folder list card
-        list_card = ctk.CTkFrame(
+        self._folder_list_card = ctk.CTkFrame(
             parent, fg_color=T["surface"], corner_radius=8,
             border_width=1, border_color=T["border"]
         )
-        list_card.grid(row=1, column=0, sticky="nsew")
-        list_card.grid_columnconfigure(0, weight=1)
-        list_card.grid_rowconfigure(0, weight=1)
+        self._folder_list_card.grid(row=1, column=0, sticky="nsew")
+        self._folder_list_card.grid_columnconfigure(0, weight=1)
+        self._folder_list_card.grid_rowconfigure(0, weight=1)
 
+        treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
         self.folder_listbox = tk.Listbox(
-            list_card, font=("Consolas", 11),
+            self._folder_list_card, font=("Consolas", 11),
             bg=T["surface"], fg=T["text_primary"],
-            selectbackground="#2A2518",
+            selectbackground=treeview_select_bg,
             selectforeground=T["gold"],
             bd=0, highlightthickness=0,
             activestyle="none", relief="flat"
@@ -415,9 +683,501 @@ class VastarionApp(ctk.CTk):
 
         self._refresh_folder_list()
 
+    # ══════════════════════════════════════════════════════
+    # ORGANIZER TAB — Dosya Düzenleme
+    # ══════════════════════════════════════════════════════
+
+    def _build_organizer_tab(self, parent):
+        T = self.T
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)  # Kurallar bölümü genişler
+
+        # ── Üst Bilgi ────────────────────────────────────
+        info_label = ctk.CTkLabel(
+            parent,
+            text="📂  Dosyalarinizi iceriklerine gore otomatik olarak klasorlere ayirin.\n"
+                 "     Kurallar tanimlayin, onizleyin, onaylayin — orijinal dosyalar yerinde kalir.",
+            font=ctk.CTkFont(size=12),
+            text_color=T["text_secondary"],
+            justify="left", anchor="w"
+        )
+        info_label.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+
+        # ── Hedef Klasör + Butonlar ──────────────────────
+        top_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        top_bar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        top_bar.grid_columnconfigure(1, weight=1)
+
+        # Hedef klasör
+        self._org_target_frame = ctk.CTkFrame(
+            top_bar, fg_color=T["surface"], corner_radius=8,
+            border_width=1, border_color=T["border"]
+        )
+        self._org_target_frame.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        self._org_target_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self._org_target_frame, text="HEDEF KLASOR",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=T["text_muted"], width=110
+        ).grid(row=0, column=0, padx=(16, 4), pady=10)
+
+        self._org_target_entry = ctk.CTkEntry(
+            self._org_target_frame, textvariable=self._org_target_dir,
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent", border_width=0,
+            text_color=T["text_primary"],
+            placeholder_text="Duzenlenen dosyalar buraya kopyalanacak...",
+            placeholder_text_color=T["text_muted"]
+        )
+        self._org_target_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=10)
+
+        ctk.CTkButton(
+            self._org_target_frame, text="Sec",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=T["gold"], hover_color=T["gold_light"],
+            text_color=T["bg"], corner_radius=6,
+            width=60, height=30, command=self._org_select_target
+        ).grid(row=0, column=2, padx=(4, 12), pady=10)
+
+        # Butonlar satırı
+        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_row.grid(row=1, column=0, sticky="ew", pady=(40, 4))
+
+        ctk.CTkButton(
+            btn_row, text="📋 Sablon Yukle",
+            font=ctk.CTkFont(size=12),
+            fg_color=T["surface2"], hover_color=T["hover"],
+            text_color=T["text_secondary"], border_width=1,
+            border_color=T["border"], corner_radius=6,
+            width=140, height=34, command=self._org_load_template
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            btn_row, text="+ Kural Ekle",
+            font=ctk.CTkFont(size=12),
+            fg_color=T["surface2"], hover_color=T["hover"],
+            text_color=T["gold"], border_width=1,
+            border_color=T["border"], corner_radius=6,
+            width=120, height=34, command=self._org_add_rule
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            btn_row, text="Tumunu Temizle",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", hover_color=T["hover"],
+            text_color=T["error"], corner_radius=6,
+            width=120, height=34, command=self._org_clear_rules
+        ).pack(side="left", padx=(0, 6))
+
+        # Eşleşmeyenler checkbox
+        ctk.CTkCheckBox(
+            btn_row, text='Eslesmeyen dosyalari "Diger" klasorune kopyala',
+            font=ctk.CTkFont(size=11),
+            text_color=T["text_secondary"],
+            fg_color=T["gold"], hover_color=T["gold_light"],
+            checkmark_color=T["bg"],
+            variable=self._org_include_unmatched
+        ).pack(side="right")
+
+        # ── Kurallar Listesi ─────────────────────────────
+        self._org_rules_scroll_frame = ctk.CTkFrame(
+            parent, fg_color=T["surface"], corner_radius=8,
+            border_width=1, border_color=T["border"]
+        )
+        self._org_rules_scroll_frame.grid(row=2, column=0, sticky="nsew", pady=(4, 8))
+        self._org_rules_scroll_frame.grid_columnconfigure(0, weight=1)
+        self._org_rules_scroll_frame.grid_rowconfigure(0, weight=1)
+
+        self._org_rules_scrollable = ctk.CTkScrollableFrame(
+            self._org_rules_scroll_frame, fg_color="transparent",
+            corner_radius=0
+        )
+        self._org_rules_scrollable.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self._org_rules_scrollable.grid_columnconfigure(0, weight=1)
+
+        # Başlangıç bilgi metni
+        self._org_empty_label = ctk.CTkLabel(
+            self._org_rules_scrollable,
+            text="Henuz kural eklenmedi.\n\n"
+                 "\"Sablon Yukle\" ile hazir kurallar yukleyebilir\n"
+                 "veya \"+ Kural Ekle\" butonuyla kendiniz olusturabilirsiniz.",
+            font=ctk.CTkFont(size=12),
+            text_color=T["text_muted"], justify="center"
+        )
+        self._org_empty_label.grid(row=0, column=0, pady=40)
+
+        # ── Alt: Önizleme + Eylem ────────────────────────
+        bottom = ctk.CTkFrame(parent, fg_color="transparent")
+        bottom.grid(row=3, column=0, sticky="ew", pady=(0, 0))
+        bottom.grid_columnconfigure(0, weight=1)
+
+        # Önizleme + Kopyalama butonları
+        action_row = ctk.CTkFrame(bottom, fg_color="transparent")
+        action_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        self._org_btn_preview = ctk.CTkButton(
+            action_row, text="🔍 Dosyalari Tara ve Onizle",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=T["surface2"], hover_color=T["hover"],
+            text_color=T["text_primary"], border_width=1,
+            border_color=T["border"], corner_radius=6,
+            height=38, command=self._org_run_preview
+        )
+        self._org_btn_preview.pack(side="left", padx=(0, 8))
+
+        self._org_btn_execute = ctk.CTkButton(
+            action_row, text="✅ Duzenlemeyi Baslat",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=T["gold"], hover_color=T["gold_light"],
+            text_color=T["bg"], corner_radius=6,
+            height=38, state="disabled",
+            command=self._org_run_execute
+        )
+        self._org_btn_execute.pack(side="left", padx=(0, 8))
+
+        self._org_status_label = ctk.CTkLabel(
+            action_row, text="",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=T["text_muted"]
+        )
+        self._org_status_label.pack(side="right")
+
+        # Önizleme kartı
+        self._org_preview_frame = ctk.CTkFrame(
+            bottom, fg_color=T["surface"], corner_radius=8,
+            border_width=1, border_color=T["border"], height=140
+        )
+        self._org_preview_frame.grid(row=1, column=0, sticky="ew")
+        self._org_preview_frame.grid_columnconfigure(0, weight=1)
+        self._org_preview_frame.grid_rowconfigure(0, weight=1)
+
+        # Önizleme Treeview
+        style = ttk.Style()
+        treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
+        style.configure("Org.Treeview",
+            background=T["surface"],
+            foreground=T["text_primary"],
+            fieldbackground=T["surface"],
+            font=("Segoe UI", 10),
+            rowheight=28,
+            borderwidth=0)
+        style.configure("Org.Treeview.Heading",
+            background=T["surface2"],
+            foreground=T["text_secondary"],
+            font=("Segoe UI", 9, "bold"),
+            borderwidth=0, relief="flat")
+        style.map("Org.Treeview",
+            background=[("selected", treeview_select_bg)],
+            foreground=[("selected", T["gold_light"])])
+
+        org_cols = ("category", "filename", "confidence", "ext", "size")
+        self._org_tree = ttk.Treeview(
+            self._org_preview_frame, columns=org_cols, show="headings",
+            selectmode="browse", style="Org.Treeview", height=5
+        )
+
+        self._org_tree.heading("category", text="Kategori")
+        self._org_tree.heading("filename", text="Dosya Adi")
+        self._org_tree.heading("confidence", text="Guvenilirlik")
+        self._org_tree.heading("ext", text="Tur")
+        self._org_tree.heading("size", text="Boyut")
+
+        self._org_tree.column("category", width=150, minwidth=100)
+        self._org_tree.column("filename", width=250, minwidth=150)
+        self._org_tree.column("confidence", width=100, minwidth=70, anchor="center")
+        self._org_tree.column("ext", width=55, minwidth=35, anchor="center")
+        self._org_tree.column("size", width=75, minwidth=45, anchor="e")
+
+        # Guvenilirlik renk tag'leri
+        self._org_tree.tag_configure("conf_high", foreground="#4ade80")    # Yesil
+        self._org_tree.tag_configure("conf_medium", foreground="#fbbf24")  # Turuncu
+        self._org_tree.tag_configure("conf_unmatched", foreground="#9A9AA0")  # Gri
+
+        org_scroll = ctk.CTkScrollbar(self._org_preview_frame, command=self._org_tree.yview)
+        self._org_tree.configure(yscrollcommand=org_scroll.set)
+        self._org_tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        org_scroll.grid(row=0, column=1, sticky="ns", pady=2)
+
+        # İlerleme çubuğu
+        self._org_progress_bar = ctk.CTkProgressBar(
+            bottom, fg_color=T["surface2"],
+            progress_color=T["gold"], corner_radius=3, height=4
+        )
+        self._org_progress_bar.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self._org_progress_bar.set(0)
+
+    # ── Organizer: Kural Yönetimi ────────────────────────
+
+    def _org_add_rule(self, folder_name="", keywords=""):
+        """Yeni bir kural satırı ekler."""
+        T = self.T
+
+        # Boş etiketi kaldır
+        if self._org_empty_label.winfo_exists():
+            self._org_empty_label.grid_forget()
+
+        row_idx = len(self._org_rule_widgets)
+        rule_frame = ctk.CTkFrame(
+            self._org_rules_scrollable, fg_color=T["surface2"],
+            corner_radius=6, border_width=1, border_color=T["border"]
+        )
+        rule_frame.grid(row=row_idx, column=0, sticky="ew", pady=(0, 4), padx=2)
+        rule_frame.grid_columnconfigure(2, weight=1)
+
+        # Kural numarası
+        ctk.CTkLabel(
+            rule_frame, text=f"#{row_idx + 1}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T["gold"], width=30
+        ).grid(row=0, column=0, padx=(10, 4), pady=8)
+
+        # Klasör adı
+        ctk.CTkLabel(
+            rule_frame, text="Klasor:",
+            font=ctk.CTkFont(size=11),
+            text_color=T["text_muted"], width=50
+        ).grid(row=0, column=1, padx=(4, 2), pady=8)
+
+        folder_var = ctk.StringVar(value=folder_name)
+        folder_entry = ctk.CTkEntry(
+            rule_frame, textvariable=folder_var,
+            font=ctk.CTkFont(size=12),
+            fg_color=T["surface"], border_width=1,
+            border_color=T["border"],
+            text_color=T["text_primary"],
+            placeholder_text="Ornek: Burslu Ogrenciler",
+            placeholder_text_color=T["text_muted"],
+            width=180, height=30
+        )
+        folder_entry.grid(row=0, column=2, sticky="w", padx=(2, 8), pady=8)
+
+        # Anahtar kelimeler
+        ctk.CTkLabel(
+            rule_frame, text="Kelimeler:",
+            font=ctk.CTkFont(size=11),
+            text_color=T["text_muted"], width=70
+        ).grid(row=0, column=3, padx=(8, 2), pady=8)
+
+        kw_var = ctk.StringVar(value=keywords)
+        kw_entry = ctk.CTkEntry(
+            rule_frame, textvariable=kw_var,
+            font=ctk.CTkFont(size=12),
+            fg_color=T["surface"], border_width=1,
+            border_color=T["border"],
+            text_color=T["text_primary"],
+            placeholder_text="burs, stipendium, scholarship (virgülle ayırın)",
+            placeholder_text_color=T["text_muted"],
+            height=30
+        )
+        kw_entry.grid(row=0, column=4, sticky="ew", padx=(2, 8), pady=8)
+        rule_frame.grid_columnconfigure(4, weight=1)
+
+        # Sil butonu
+        del_btn = ctk.CTkButton(
+            rule_frame, text="✕",
+            font=ctk.CTkFont(size=14),
+            fg_color="transparent", hover_color=T["hover"],
+            text_color=T["error"], corner_radius=4,
+            width=32, height=30,
+            command=lambda: self._org_remove_rule(rule_frame)
+        )
+        del_btn.grid(row=0, column=5, padx=(0, 8), pady=8)
+
+        widget_info = {
+            "frame": rule_frame,
+            "folder_var": folder_var,
+            "folder_entry": folder_entry,
+            "keywords_var": kw_var,
+            "keywords_entry": kw_entry,
+        }
+        self._org_rule_widgets.append(widget_info)
+
+    def _org_remove_rule(self, frame):
+        """Belirli bir kuralı siler."""
+        self._org_rule_widgets = [w for w in self._org_rule_widgets if w["frame"] != frame]
+        frame.destroy()
+        self._org_renumber_rules()
+
+        # Hepsi silindiyse boş etiket göster
+        if not self._org_rule_widgets:
+            self._org_empty_label.grid(row=0, column=0, pady=40)
+
+    def _org_renumber_rules(self):
+        """Kural numaralarını yeniden sıralar."""
+        for i, w in enumerate(self._org_rule_widgets):
+            w["frame"].grid(row=i, column=0, sticky="ew", pady=(0, 4), padx=2)
+
+    def _org_clear_rules(self):
+        """Tüm kuralları temizler."""
+        for w in self._org_rule_widgets:
+            w["frame"].destroy()
+        self._org_rule_widgets.clear()
+        self._org_empty_label.grid(row=0, column=0, pady=40)
+
+    def _org_load_template(self):
+        """Hazır şablonu yükler."""
+        self._org_clear_rules()
+        template = ORGANIZER_TEMPLATES.get("Egitim Ataseligi", [])
+        for rule_data in template:
+            self._org_add_rule(
+                folder_name=rule_data["folder_name"],
+                keywords=rule_data["keywords"]
+            )
+        self._org_status_label.configure(
+            text="Egitim Ataseligi sablonu yuklendi",
+            text_color=self.T["success"]
+        )
+
+    def _org_select_target(self):
+        """Hedef klasör seçiciyi açar."""
+        from tkinter import filedialog
+        folder = filedialog.askdirectory(title="Duzenlenmis dosyalar icin hedef klasor secin")
+        if folder:
+            self._org_target_dir.set(folder)
+
+    def _org_get_rules(self) -> list:
+        """Mevcut UI kurallarını OrganizerRule listesine çevirir."""
+        rules = []
+        for w in self._org_rule_widgets:
+            folder = w["folder_var"].get().strip()
+            keywords = w["keywords_var"].get().strip()
+            if folder and keywords:
+                rules.append(OrganizerRule.from_dict({
+                    "folder_name": folder,
+                    "keywords": keywords
+                }))
+        return rules
+
+    # ── Organizer: Önizleme ──────────────────────────────
+
+    def _org_run_preview(self):
+        """Dosyalari arka thread'de tarayip onizleme treeview'ina yukler."""
+        rules = self._org_get_rules()
+        if not rules:
+            self._org_status_label.configure(
+                text="Lutfen en az bir kural ekleyin",
+                text_color=self.T["error"]
+            )
+            return
+
+        self._org_tree.delete(*self._org_tree.get_children())
+        self._org_btn_preview.configure(state="disabled", text="Taraniyor...")
+        self._org_status_label.configure(
+            text="Taraniyor...", text_color=self.T["text_muted"])
+        self.update_idletasks()
+
+        include_unmatched = self._org_include_unmatched.get()
+
+        def _do_preview():
+            preview = self.organizer.preview(rules, include_unmatched)
+            self.ui_queue.put(("org_preview_done", preview))
+
+        threading.Thread(target=_do_preview, daemon=True).start()
+
+    def _org_apply_preview(self, preview):
+        """Onizleme sonuclarini UI'a uygular (main thread'de calisir)."""
+        self._org_tree.delete(*self._org_tree.get_children())
+
+        for category, files in preview["categories"].items():
+            for f in files:
+                size_str = format_size(f["size"]) if f["size"] else "-"
+                confidence = f.get("confidence", "low")
+                conf_label = self.organizer.get_confidence_label(f["score"])
+
+                tag = "conf_high" if confidence == "high" else "conf_medium"
+                self._org_tree.insert("", "end", values=(
+                    category, f["filename"], conf_label, f["ext"], size_str
+                ), tags=(tag,))
+
+        if self._org_include_unmatched.get() and preview["unmatched"]:
+            for f in preview["unmatched"]:
+                size_str = format_size(f["size"]) if f["size"] else "-"
+                self._org_tree.insert("", "end", values=(
+                    "Diger", f["filename"], "-", f["ext"], size_str
+                ), tags=("conf_unmatched",))
+
+        total = preview["total_matched"]
+        unmatched = preview["total_unmatched"]
+
+        status_text = f"{total} dosya eslesti (min skor: {MIN_SCORE_THRESHOLD})"
+        if unmatched > 0:
+            status_text += f" | {unmatched} eslesmeyen"
+
+        self._org_status_label.configure(
+            text=status_text,
+            text_color=self.T["gold"] if total > 0 else self.T["error"]
+        )
+
+        self._org_btn_preview.configure(
+            state="normal", text="Dosyalari Tara ve Onizle")
+
+        if total > 0 or (self._org_include_unmatched.get() and unmatched > 0):
+            copy_count = total + (unmatched if self._org_include_unmatched.get() else 0)
+            self._org_btn_execute.configure(
+                text=f"Duzenlemeyi Baslat ({copy_count} dosya)",
+                state="normal"
+            )
+        else:
+            self._org_btn_execute.configure(state="disabled")
+
+    # ── Organizer: Kopyalama ─────────────────────────────
+
+    def _org_run_execute(self):
+        """Onay aldıktan sonra kopyalama işlemini başlatır."""
+        target = self._org_target_dir.get().strip()
+        if not target:
+            messagebox.showwarning(
+                "Hedef Klasor Secilmedi",
+                "Lütfen düzenlenmiş dosyaların kopyalanacağı\nbir hedef klasör seçin."
+            )
+            return
+
+        rules = self._org_get_rules()
+        if not rules:
+            return
+
+        # Önizleme bilgisi
+        preview = self.organizer.preview(rules, self._org_include_unmatched.get())
+        total = preview["total_matched"]
+        if self._org_include_unmatched.get():
+            total += preview["total_unmatched"]
+
+        # Kategorilerin özeti
+        summary_parts = []
+        for cat, files in preview["categories"].items():
+            if files:
+                summary_parts.append(f"  • {cat}: {len(files)} dosya")
+        if self._org_include_unmatched.get() and preview["unmatched"]:
+            summary_parts.append(f"  • Diger: {len(preview['unmatched'])} dosya")
+        summary_text = "\n".join(summary_parts)
+
+        # Onay dialogu
+        confirm = messagebox.askyesno(
+            "Duzenleme Onayi",
+            f"Toplam {total} dosya asagidaki kategorilere kopyalanacak:\n\n"
+            f"{summary_text}\n\n"
+            f"Hedef: {target}\n\n"
+            f"⚠️ Orijinal dosyalar yerinde kalir, sadece KOPYALAMA yapilir.\n\n"
+            f"Devam edilsin mi?"
+        )
+
+        if not confirm:
+            return
+
+        # Kopyalama başlat
+        self._org_btn_execute.configure(text="Kopyalaniyor...", state="disabled")
+        self._org_btn_preview.configure(state="disabled")
+        self._org_progress_bar.set(0)
+
+        self.organizer.execute(
+            rules, target, self._org_include_unmatched.get()
+        )
+
     # ── ABOUT TAB (Card-based) ───────────────────────────
 
     def _build_about_tab(self, parent):
+        T = self.T
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
@@ -478,15 +1238,16 @@ class VastarionApp(ctk.CTk):
     # ── STATUS BAR ───────────────────────────────────────
 
     def _build_status_bar(self):
-        status = ctk.CTkFrame(
+        T = self.T
+        self._status_frame = ctk.CTkFrame(
             self, fg_color=T["surface"], corner_radius=0, height=34
         )
-        status.grid(row=3, column=0, sticky="ew")
-        status.grid_propagate(False)
-        status.grid_columnconfigure(1, weight=1)
+        self._status_frame.grid(row=3, column=0, sticky="ew")
+        self._status_frame.grid_propagate(False)
+        self._status_frame.grid_columnconfigure(1, weight=1)
 
         # Left: logo + status text
-        left = ctk.CTkFrame(status, fg_color="transparent")
+        left = ctk.CTkFrame(self._status_frame, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w", padx=(24, 0), pady=4)
 
         logo_s = self._load_logo(18)
@@ -501,7 +1262,7 @@ class VastarionApp(ctk.CTk):
 
         # Right: watcher
         self.lbl_watcher = ctk.CTkLabel(
-            status, text="● Watcher aktif",
+            self._status_frame, text="● Watcher aktif",
             font=ctk.CTkFont(size=11),
             text_color=T["success"], anchor="e"
         )
@@ -517,6 +1278,7 @@ class VastarionApp(ctk.CTk):
         self._search_after_id = self.after(200, self._execute_search)
 
     def _execute_search(self):
+        T = self.T
         query = self.search_var.get().strip()
         self.tree.delete(*self.tree.get_children())
         self._result_paths.clear()
@@ -552,6 +1314,7 @@ class VastarionApp(ctk.CTk):
             self._result_paths.append(r["filepath"])
 
     def _on_tree_select(self, event=None):
+        T = self.T
         self.txt_preview.configure(state="normal")
         self.txt_preview.delete("1.0", "end")
 
@@ -648,18 +1411,18 @@ class VastarionApp(ctk.CTk):
         if self._folder_hover_idx is not None:
             try:
                 self.folder_listbox.itemconfig(
-                    self._folder_hover_idx, bg=T["surface"], fg=T["text_primary"])
+                    self._folder_hover_idx, bg=self.T["surface"], fg=self.T["text_primary"])
             except tk.TclError:
                 pass
         self._folder_hover_idx = idx
         if 0 <= idx < self.folder_listbox.size():
-            self.folder_listbox.itemconfig(idx, bg=T["hover"], fg=T["gold_light"])
+            self.folder_listbox.itemconfig(idx, bg=self.T["hover"], fg=self.T["gold_light"])
 
     def _on_folder_leave(self, event):
         if self._folder_hover_idx is not None:
             try:
                 self.folder_listbox.itemconfig(
-                    self._folder_hover_idx, bg=T["surface"], fg=T["text_primary"])
+                    self._folder_hover_idx, bg=self.T["surface"], fg=self.T["text_primary"])
             except tk.TclError:
                 pass
             self._folder_hover_idx = None
@@ -762,6 +1525,42 @@ class VastarionApp(ctk.CTk):
                     self._update_stats()
                 elif msg_type == "error":
                     self.lbl_status.configure(text=f"Hata: {data}")
+                # Organizer mesajlari
+                elif msg_type == "org_preview_done":
+                    self._org_apply_preview(data)
+                elif msg_type == "org_status":
+                    self._org_status_label.configure(text=data)
+                elif msg_type == "org_progress":
+                    copied, total, errors = data
+                    self._org_progress_bar.set(copied / max(total, 1))
+                    self._org_status_label.configure(
+                        text=f"Kopyalaniyor: {copied}/{total}" +
+                             (f" ({errors} hata)" if errors else ""))
+                elif msg_type == "org_done":
+                    copied, total, errors = data
+                    self._org_progress_bar.set(1 if copied > 0 else 0)
+                    self._org_btn_execute.configure(
+                        text="✅ Duzenlemeyi Baslat", state="disabled")
+                    self._org_btn_preview.configure(state="normal")
+                    if copied > 0:
+                        self._org_status_label.configure(
+                            text=f"Tamamlandi: {copied} dosya kopyalandi" +
+                                 (f", {errors} hata" if errors else ""),
+                            text_color=self.T["success"]
+                        )
+                        # Hedef klasörü aç
+                        target = self._org_target_dir.get().strip()
+                        if target and os.path.exists(target):
+                            open_it = messagebox.askyesno(
+                                "Duzenleme Tamamlandi",
+                                f"{copied} dosya basariyla kopyalandi!\n\n"
+                                f"Hedef klasoru acmak ister misiniz?\n{target}"
+                            )
+                            if open_it:
+                                if sys.platform == "win32":
+                                    os.startfile(target)
+                                else:
+                                    os.system(f'xdg-open "{target}"')
         except queue.Empty:
             pass
         self.after(100, self._process_queue)
@@ -803,6 +1602,7 @@ class VastarionApp(ctk.CTk):
     def _on_close(self):
         log.info("Uygulama kapatiliyor")
         self.worker.stop()
+        self.organizer.stop()
         self.watcher.stop()
         self.db.close()
         self.destroy()
