@@ -122,7 +122,15 @@ class VastarionApp(ctk.CTk):
     # ══════════════════════════════════════════════════════
 
     def _toggle_theme(self):
-        """Dark <-> Light tema gecisi."""
+        """Dark <-> Light tema gecisi.
+
+        NOT: ctk.set_appearance_mode() CAGRILMIYOR — o fonksiyon tum
+        CustomTkinter widget agacini tek tek gezer ve her birini
+        yeniden boyar. 200+ widget'ta 500ms+ surer, donmaya sebep olur.
+
+        Bunun yerine sadece kendi renk dict'imizi (self.T) degistirip
+        bildigimiz widget'lari tek tek configure ediyoruz — 10x hizli.
+        """
         self.btn_theme.configure(state="disabled")
 
         if self._theme_mode == "dark":
@@ -134,14 +142,18 @@ class VastarionApp(ctk.CTk):
 
         set_theme_mode(self._theme_mode)
 
-        # CTk appearance mode + kendi renklerimiz
-        ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
+        # sadece kendi renklerimizi guncelle
         self._refresh_all_theme()
 
         self.btn_theme.configure(state="normal")
 
     def _refresh_all_theme(self):
-        """Tum widget'lari ve stilleri yeni temaya gore gunceller."""
+        """Tum widget'lari ve stilleri yeni temaya gore gunceller.
+
+        CTkEntry/CTkTextbox'larin fg_color'u 'transparent' ise
+        tekrar set edilemez (CTk hatasi). Bu yuzden sadece
+        text_color gibi guvenli property'ler guncellenir.
+        """
         T = self.T
         treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
 
@@ -157,13 +169,11 @@ class VastarionApp(ctk.CTk):
         self._header_frame.configure(fg_color=T["bg"])
         self.lbl_stats.configure(text_color=T["text_muted"])
 
-        # ── Search bar ──
+        # ── Search bar (entry'nin fg_color'una DOKUNMA — transparent) ──
         self._search_frame.configure(fg_color=T["surface"], border_color=T["border"])
-        self.entry_search.configure(
-            text_color=T["text_primary"],
+        self.entry_search.configure(text_color=T["text_primary"],
             placeholder_text_color=T["text_muted"])
-        self._btn_history.configure(
-            hover_color=T["hover"], text_color=T["text_muted"])
+        self._btn_history.configure(hover_color=T["hover"], text_color=T["text_muted"])
         self.lbl_search_time.configure(text_color=T["text_muted"])
 
         # ── Tabs ──
@@ -226,28 +236,11 @@ class VastarionApp(ctk.CTk):
         self.lbl_watcher.configure(text_color=T["success"])
 
         # ── About tab ──
-        self.info_text.configure(
-            fg_color=T["surface"], text_color=T["text_secondary"],
+        self.info_text.configure(fg_color=T["surface"], text_color=T["text_secondary"],
             border_color=T["border"])
-
-        # ── Organizer target entry ──
-        try:
-            self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
-            self._org_target_entry.configure(
-                text_color=T["text_primary"],
-                placeholder_text_color=T["text_muted"])
-            self._org_btn_select.configure(
-                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"])
-        except Exception:
-            pass
 
         # ── Organizer tab ──
         self._refresh_organizer_theme()
-
-        # ── Mevcut treeview satirlarini guncelle ──
-        for item in self.tree.get_children():
-            if item not in self.tree.selection():
-                self.tree.item(item, tags=("normal",))
 
 
     def _refresh_organizer_theme(self):
@@ -255,12 +248,15 @@ class VastarionApp(ctk.CTk):
         T = self.T
         try:
             self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
+            # entry fg_color="transparent" oldugu icin sadece text_color guncelle
             self._org_target_entry.configure(
                 text_color=T["text_primary"],
                 placeholder_text_color=T["text_muted"]
             )
+            self._org_btn_select.configure(
+                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"]
+            )
             self._org_rules_scroll_frame.configure(fg_color=T["surface"], border_color=T["border"])
-            self._org_rules_scrollable.configure(fg_color="transparent")
             self._org_preview_frame.configure(fg_color=T["surface"], border_color=T["border"])
             self._org_progress_bar.configure(fg_color=T["surface2"], progress_color=T["gold"])
             self._org_status_label.configure(text_color=T["text_muted"])
@@ -271,11 +267,10 @@ class VastarionApp(ctk.CTk):
                 text_color=T["text_primary"], border_color=T["border"]
             )
             self._org_btn_execute.configure(
-                fg_color=T["gold"], hover_color=T["gold_light"],
-                text_color=T["bg"]
+                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"]
             )
 
-            # Kural widget'larının renklerini güncelle
+            # Kural widget'lari
             for widgets in self._org_rule_widgets:
                 widgets["frame"].configure(fg_color=T["surface2"], border_color=T["border"])
                 widgets["folder_entry"].configure(
@@ -291,21 +286,18 @@ class VastarionApp(ctk.CTk):
             treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
             style = ttk.Style()
             style.configure("Org.Treeview",
-                background=T["surface"],
-                foreground=T["text_primary"],
+                background=T["surface"], foreground=T["text_primary"],
                 fieldbackground=T["surface"])
             style.configure("Org.Treeview.Heading",
-                background=T["surface2"],
-                foreground=T["text_secondary"])
+                background=T["surface2"], foreground=T["text_secondary"])
             style.map("Org.Treeview",
                 background=[("selected", treeview_select_bg)],
                 foreground=[("selected", T["gold_light"])])
 
-            # Guvenilirlik renkleri tema'ya gore guncelle
             self._update_org_confidence_tags()
 
         except Exception:
-            pass  # Widget'lar henuz olusturulmamis olabilir
+            pass
 
     # ══════════════════════════════════════════════════════
     # BUILD UI
@@ -712,13 +704,13 @@ class VastarionApp(ctk.CTk):
         self._org_target_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=10)
 
         self._org_btn_select = ctk.CTkButton(
-            self._org_target_frame, text="  Sec  ",
+            self._org_target_frame, text="Sec",
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=T["gold"], hover_color=T["gold_light"],
             text_color=T["bg"], corner_radius=6,
-            width=80, height=34, command=self._org_select_target
+            width=70, height=32, command=self._org_select_target
         )
-        self._org_btn_select.grid(row=0, column=2, padx=(4, 16), pady=10, sticky="ns")
+        self._org_btn_select.grid(row=0, column=2, padx=(8, 12), pady=10)
 
         # Butonlar satırı
         btn_row = ctk.CTkFrame(parent, fg_color="transparent")
