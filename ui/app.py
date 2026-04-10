@@ -122,7 +122,7 @@ class VastarionApp(ctk.CTk):
     # ══════════════════════════════════════════════════════
 
     def _toggle_theme(self):
-        """Dark <-> Light tema gecisi. CTk mode atlanarak hizlandirildi."""
+        """Dark <-> Light tema gecisi — ekran guncellemesi durdurulup toplu yapilir."""
         self.btn_theme.configure(state="disabled")
 
         if self._theme_mode == "dark":
@@ -134,9 +134,27 @@ class VastarionApp(ctk.CTk):
 
         set_theme_mode(self._theme_mode)
 
-        # CTk set_appearance_mode() CAGIRMA — bu en yavas kisim.
-        # Sadece kendi renklerimizi guncelle (cok daha hizli).
+        # 1) Ekran cizimini durdur — kullanici ara hali gormez
+        try:
+            self.wm_attributes("-alpha", 0.0)
+        except Exception:
+            pass
+
+        # 2) CTk appearance mode'u degistir (CTk widget icleri icin gerekli)
+        ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
+
+        # 3) Kendi renklerimizi uygula
         self._refresh_all_theme()
+
+        # 4) Tum bekleyen cizim islerini bitir
+        self.update_idletasks()
+
+        # 5) Ekrani tek seferde goster
+        try:
+            self.wm_attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
         self.btn_theme.configure(state="normal")
 
     def _refresh_all_theme(self):
@@ -158,9 +176,12 @@ class VastarionApp(ctk.CTk):
 
         # ── Search bar ──
         self._search_frame.configure(fg_color=T["surface"], border_color=T["border"])
-        self.entry_search.configure(text_color=T["text_primary"],
+        self.entry_search.configure(
+            text_color=T["text_primary"],
+            fg_color="transparent",
             placeholder_text_color=T["text_muted"])
-        self._btn_history.configure(hover_color=T["hover"], text_color=T["text_muted"])
+        self._btn_history.configure(
+            fg_color="transparent", hover_color=T["hover"], text_color=T["text_muted"])
         self.lbl_search_time.configure(text_color=T["text_muted"])
 
         # ── Tabs ──
@@ -223,8 +244,20 @@ class VastarionApp(ctk.CTk):
         self.lbl_watcher.configure(text_color=T["success"])
 
         # ── About tab ──
-        self.info_text.configure(fg_color=T["surface"], text_color=T["text_secondary"],
+        self.info_text.configure(
+            fg_color=T["surface"], text_color=T["text_secondary"],
             border_color=T["border"])
+
+        # ── Organizer target entry ──
+        try:
+            self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
+            self._org_target_entry.configure(
+                text_color=T["text_primary"], fg_color="transparent",
+                placeholder_text_color=T["text_muted"])
+            self._org_btn_select.configure(
+                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"])
+        except Exception:
+            pass
 
         # ── Organizer tab ──
         self._refresh_organizer_theme()
@@ -697,13 +730,13 @@ class VastarionApp(ctk.CTk):
         self._org_target_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=10)
 
         self._org_btn_select = ctk.CTkButton(
-            self._org_target_frame, text="Sec",
+            self._org_target_frame, text="  Sec  ",
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=T["gold"], hover_color=T["gold_light"],
             text_color=T["bg"], corner_radius=6,
-            width=70, height=32, command=self._org_select_target
+            width=80, height=34, command=self._org_select_target
         )
-        self._org_btn_select.grid(row=0, column=2, padx=(4, 10), pady=8, sticky="e")
+        self._org_btn_select.grid(row=0, column=2, padx=(4, 16), pady=10, sticky="ns")
 
         # Butonlar satırı
         btn_row = ctk.CTkFrame(parent, fg_color="transparent")

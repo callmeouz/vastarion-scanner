@@ -219,11 +219,13 @@ python -m pytest tests/test_core.py::TestSecurity -v
 - [x] Tek EXE dagitim
 - [x] Dosya duzenleme (organizer) + sablon sistemi
 - [x] Guvenilirlik puanlamasi (yesil/turuncu)
-- [ ] Lazy loading (buyuk sonuc setleri icin)
-- [ ] Arama gecmisi
+- [x] Lazy loading (ilk 50 sonuc aninda, scroll ile devami)
+- [x] Arama gecmisi (son 20 arama, dropdown ile erisim)
+- [x] Threaded onizleme (dosya icerigi arka planda okunur)
 - [ ] watchdog kutuphanesi ile gelistirilmis izleme
 - [ ] Dosya onizleme (PDF thumbnail)
 - [ ] Multiprocessing ile paralel tarama
+- [ ] Drag & drop ile klasor ekleme
 
 ---
 
