@@ -58,6 +58,10 @@ class VastarionApp(ctk.CTk):
         self._search_after_id = None
         self._content_cache = {}
         self._result_paths = []
+        self._all_results = []       # Lazy loading: tum sonuclar
+        self._loaded_count = 0       # Lazy loading: yuklenmiş sayisi
+        self._LAZY_BATCH = 50        # Lazy loading: her seferde yuklenecek
+        self._search_history = []    # Arama gecmisi (son 20)
         self._hover_item = None
         self._folder_hover_idx = None
         self._logo_refs = {}
@@ -156,6 +160,7 @@ class VastarionApp(ctk.CTk):
         self._search_frame.configure(fg_color=T["surface"], border_color=T["border"])
         self.entry_search.configure(text_color=T["text_primary"],
             placeholder_text_color=T["text_muted"])
+        self._btn_history.configure(hover_color=T["hover"], text_color=T["text_muted"])
         self.lbl_search_time.configure(text_color=T["text_muted"])
 
         # ── Tabs ──
@@ -405,12 +410,22 @@ class VastarionApp(ctk.CTk):
         self.entry_search.bind("<FocusOut>",
             lambda e: self._search_frame.configure(border_color=self.T["border"]))
 
+        # Arama gecmisi butonu
+        self._btn_history = ctk.CTkButton(
+            self._search_frame, text="▼",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", hover_color=T["hover"],
+            text_color=T["text_muted"], width=28, height=28,
+            corner_radius=4, command=self._show_search_history
+        )
+        self._btn_history.grid(row=0, column=2, padx=(0, 4), pady=14)
+
         self.lbl_search_time = ctk.CTkLabel(
             self._search_frame, text="",
             font=ctk.CTkFont(family="Consolas", size=11),
             text_color=T["text_muted"], width=80
         )
-        self.lbl_search_time.grid(row=0, column=2, padx=(0, 16), pady=14)
+        self.lbl_search_time.grid(row=0, column=3, padx=(0, 16), pady=14)
 
     # ── MAIN AREA (TABS) ────────────────────────────────
 
@@ -505,7 +520,8 @@ class VastarionApp(ctk.CTk):
             background=T["surface"], foreground=T["text_primary"])
 
         scrollbar = ctk.CTkScrollbar(self._tree_card, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.configure(yscrollcommand=self._tree_scroll_handler)
+        self._tree_scrollbar = scrollbar
         self.tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         scrollbar.grid(row=0, column=1, sticky="ns", pady=2)
 
@@ -1227,6 +1243,8 @@ class VastarionApp(ctk.CTk):
         query = self.search_var.get().strip()
         self.tree.delete(*self.tree.get_children())
         self._result_paths.clear()
+        self._all_results.clear()
+        self._loaded_count = 0
         self._hover_item = None
 
         self.txt_preview.configure(state="normal")
@@ -1239,7 +1257,10 @@ class VastarionApp(ctk.CTk):
             self.lbl_search_time.configure(text="")
             return
 
-        result = self.search_engine.search(query)
+        # Arama gecmisine ekle
+        self._add_to_history(query)
+
+        result = self.search_engine.search(query, limit=500)
         self.lbl_search_time.configure(text=f"{result['elapsed_ms']} ms")
 
         if result["count"] == 0:
@@ -1247,24 +1268,103 @@ class VastarionApp(ctk.CTk):
                 text=f'"{query}" icin sonuc bulunamadi', text_color=T["error"])
             return
 
+        self._all_results = result["results"]
         self.lbl_result_count.configure(
             text=f'"{query}" icin {result["count"]} sonuc', text_color=T["gold"])
 
-        for r in result["results"]:
+        # Lazy loading: sadece ilk 50'yi yukle
+        self._load_next_batch()
+
+    def _load_next_batch(self):
+        """Sonuclarin sonraki batch'ini Treeview'a yukler."""
+        end = min(self._loaded_count + self._LAZY_BATCH, len(self._all_results))
+        for r in self._all_results[self._loaded_count:end]:
             size_str = format_size(r["size"]) if r["size"] else "-"
             snippet = r.get("snippet", "")[:80] or "(dosya adinda eslesme)"
             self.tree.insert("", "end", values=(
                 r["filename"], snippet, r["directory"], r["ext"], size_str
             ), tags=("normal",))
             self._result_paths.append(r["filepath"])
+        self._loaded_count = end
+
+    def _tree_scroll_handler(self, *args):
+        """Scrollbar'a veri gonderir + lazy loading tetikler."""
+        self._tree_scrollbar.set(*args)
+        self._on_tree_scroll(*args)
+
+    def _on_tree_scroll(self, *args):
+        """Treeview scroll edildiginde daha fazla sonuc yukler."""
+        # Yscrollbar'dan gelen deger 0.0 - 1.0 arasi
+        if self._loaded_count < len(self._all_results):
+            # Scroll sonuna yaklastiginda yukle
+            try:
+                bottom = float(args[1]) if len(args) > 1 else 0
+                if bottom > 0.85:
+                    self._load_next_batch()
+            except (ValueError, IndexError):
+                pass
+
+    def _add_to_history(self, query: str):
+        """Arama gecmisine ekler (max 20)."""
+        q = query.strip()
+        if not q:
+            return
+        if q in self._search_history:
+            self._search_history.remove(q)
+        self._search_history.insert(0, q)
+        if len(self._search_history) > 20:
+            self._search_history.pop()
+
+    def _show_search_history(self):
+        """Arama gecmisini dropdown olarak gosterir."""
+        if not self._search_history:
+            return
+
+        T = self.T
+        menu = tk.Menu(
+            self, tearoff=0,
+            bg=T["surface2"], fg=T["text_primary"],
+            activebackground=T["hover"], activeforeground=T["gold"],
+            font=("Segoe UI", 10), relief="flat", bd=1
+        )
+        for q in self._search_history[:15]:
+            display = q if len(q) <= 40 else q[:37] + "..."
+            menu.add_command(label=f"  {display}",
+                command=lambda query=q: self._apply_history(query))
+
+        if len(self._search_history) > 0:
+            menu.add_separator()
+            menu.add_command(label="  Gecmisi Temizle",
+                command=self._clear_history)
+
+        # Butonun altinda goster
+        try:
+            x = self._btn_history.winfo_rootx()
+            y = self._btn_history.winfo_rooty() + self._btn_history.winfo_height()
+            menu.post(x, y)
+        except Exception:
+            pass
+
+    def _apply_history(self, query: str):
+        """Gecmisten secilen aramayi uygular."""
+        self.search_var.set(query)
+        self.entry_search.focus_set()
+
+    def _clear_history(self):
+        """Arama gecmisini temizler."""
+        self._search_history.clear()
 
     def _on_tree_select(self, event=None):
         T = self.T
         self.txt_preview.configure(state="normal")
         self.txt_preview.delete("1.0", "end")
+        self.txt_preview.insert("end", "  Yukleniyor...")
+        self.txt_preview.configure(state="disabled")
 
         sel = self.tree.selection()
         if not sel:
+            self.txt_preview.configure(state="normal")
+            self.txt_preview.delete("1.0", "end")
             self.txt_preview.configure(state="disabled")
             return
 
@@ -1276,19 +1376,41 @@ class VastarionApp(ctk.CTk):
         filepath = self._result_paths[idx]
         query = self.search_var.get().strip()
         if not query:
+            self.txt_preview.configure(state="normal")
+            self.txt_preview.delete("1.0", "end")
             self.txt_preview.configure(state="disabled")
             return
 
-        if filepath not in self._content_cache:
-            content = extract_content(filepath) if os.path.exists(filepath) else ""
-            self._content_cache[filepath] = content
-            if len(self._content_cache) > 100:
-                del self._content_cache[next(iter(self._content_cache))]
+        # Cache'de varsa hemen goster, yoksa thread ile yukle
+        if filepath in self._content_cache:
+            self._render_preview(filepath, query)
+        else:
+            threading.Thread(
+                target=self._load_preview_async,
+                args=(filepath, query), daemon=True
+            ).start()
 
+    def _load_preview_async(self, filepath, query):
+        """Dosya icerigini arka planda okur, sonra UI'a gonderir."""
+        content = extract_content(filepath) if os.path.exists(filepath) else ""
+        self._content_cache[filepath] = content
+        if len(self._content_cache) > 150:
+            # En eski 50 tanesini sil
+            keys = list(self._content_cache.keys())
+            for k in keys[:50]:
+                del self._content_cache[k]
+        # UI thread'inde render et
+        self.after(0, lambda: self._render_preview(filepath, query))
+
+    def _render_preview(self, filepath, query):
+        """Onizleme panelini doldurur (UI thread'inde calisir)."""
+        T = self.T
         content = self._content_cache.get(filepath, "")
         query_lower = tr_lower(query)
 
-        # Highlight tag — eslesen kelime gold renkte
+        self.txt_preview.configure(state="normal")
+        self.txt_preview.delete("1.0", "end")
+
         try:
             self.txt_preview.tag_config(
                 "highlight", foreground=T["gold"],
@@ -1305,8 +1427,6 @@ class VastarionApp(ctk.CTk):
                 prefix = f"  Satir {i+1}: "
                 line_text = line.strip()[:250]
                 self.txt_preview.insert("end", prefix)
-
-                # Eslesen kismi highlight ile ekle
                 self._insert_highlighted(line_text, query)
                 self.txt_preview.insert("end", "\n")
                 shown += 1
