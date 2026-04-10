@@ -178,10 +178,9 @@ class VastarionApp(ctk.CTk):
         self._search_frame.configure(fg_color=T["surface"], border_color=T["border"])
         self.entry_search.configure(
             text_color=T["text_primary"],
-            fg_color="transparent",
             placeholder_text_color=T["text_muted"])
         self._btn_history.configure(
-            fg_color="transparent", hover_color=T["hover"], text_color=T["text_muted"])
+            hover_color=T["hover"], text_color=T["text_muted"])
         self.lbl_search_time.configure(text_color=T["text_muted"])
 
         # ── Tabs ──
@@ -252,7 +251,7 @@ class VastarionApp(ctk.CTk):
         try:
             self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
             self._org_target_entry.configure(
-                text_color=T["text_primary"], fg_color="transparent",
+                text_color=T["text_primary"],
                 placeholder_text_color=T["text_muted"])
             self._org_btn_select.configure(
                 fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"])
