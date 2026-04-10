@@ -192,6 +192,80 @@ class TestSearchDedup(unittest.TestCase):
         self.assertTrue(r2)  # Ayni isim + boyut = duplicate
 
 
+class TestOrganizerScoring(unittest.TestCase):
+    """Organizer agirlikli skor sistemi testleri."""
+
+    def setUp(self):
+        from core.organizer import FileOrganizer, _is_specific_keyword, _keyword_weight
+        self.score = FileOrganizer._score_file
+        self.match = FileOrganizer._match_file
+        self.confidence = FileOrganizer.get_confidence
+        self._is_specific = _is_specific_keyword
+        self._weight = _keyword_weight
+
+    def test_specific_keyword_long(self):
+        """8+ karakter keyword spesifik sayilmali."""
+        self.assertTrue(self._is_specific("stipendium"))
+        self.assertTrue(self._is_specific("aufenthaltstitel"))
+        self.assertTrue(self._is_specific("burslandirma"))
+
+    def test_specific_keyword_multiword(self):
+        """Cok kelimeli keyword spesifik sayilmali."""
+        self.assertTrue(self._is_specific("ogrenci basvuru"))
+        self.assertTrue(self._is_specific("askerlik subesi"))
+
+    def test_common_keyword_short(self):
+        """Kisa keyword yaygin sayilmali."""
+        self.assertFalse(self._is_specific("burs"))
+        self.assertFalse(self._is_specific("vize"))
+        self.assertFalse(self._is_specific("lehrer"))
+
+    def test_single_common_keyword_below_threshold(self):
+        """Tek kisa keyword (7 karakter) minimum esigi (2) gecmemeli."""
+        # "burs" = 4 karakter = common = 1 puan
+        score = self.score("bu belgede burs kelimesi var", "rapor.txt", ["burs"])
+        self.assertEqual(score, 1)
+        self.assertFalse(self.match("bu belgede burs kelimesi var", "rapor.txt", ["burs"]))
+
+    def test_two_common_keywords_pass_threshold(self):
+        """Iki kisa keyword minimum esigi gecmeli."""
+        # "burs" (1) + "vize" (1) = 2 puan >= esik
+        score = self.score("burs ve vize ile ilgili belge", "rapor.txt", ["burs", "vize"])
+        self.assertEqual(score, 2)
+        self.assertTrue(self.match("burs ve vize ile ilgili belge", "rapor.txt", ["burs", "vize"]))
+
+    def test_specific_keyword_alone_passes(self):
+        """Tek spesifik keyword (3 puan) minimum esigi gecmeli."""
+        score = self.score("stipendium basvurusu yapildi", "form.pdf", ["stipendium"])
+        self.assertEqual(score, 3)
+        self.assertTrue(self.match("stipendium basvurusu yapildi", "form.pdf", ["stipendium"]))
+
+    def test_filename_match_high_score(self):
+        """Dosya adinda eslesen keyword +5 puan almali."""
+        score = self.score("bos icerik", "burslu_ogrenci.xlsx", ["burs"])
+        self.assertEqual(score, 5)
+
+    def test_confidence_levels(self):
+        """Guvenilirlik seviyeleri dogru donmeli."""
+        self.assertEqual(self.confidence(5), "high")
+        self.assertEqual(self.confidence(7), "high")
+        self.assertEqual(self.confidence(3), "medium")
+        self.assertEqual(self.confidence(2), "medium")
+        self.assertEqual(self.confidence(1), "low")
+        self.assertEqual(self.confidence(0), "low")
+
+    def test_mixed_scoring(self):
+        """Karisik keyword'ler dogru agirlikla puanlanmali."""
+        # "burs" (kisa=1) + "stipendium" (spesifik=3) = 4
+        score = self.score("burs ve stipendium bilgileri", "rapor.txt", ["burs", "stipendium"])
+        self.assertEqual(score, 4)
+
+    def test_no_match_returns_zero(self):
+        """Hic eslesme yoksa skor 0 donmeli."""
+        score = self.score("bu tamamen alakasiz bir belge", "foto.jpg", ["ogretmen", "lehrer"])
+        self.assertEqual(score, 0)
+
+
 class TestSecurity(unittest.TestCase):
     """Guvenlik testleri."""
 
