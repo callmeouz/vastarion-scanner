@@ -122,7 +122,7 @@ class VastarionApp(ctk.CTk):
     # ══════════════════════════════════════════════════════
 
     def _toggle_theme(self):
-        """Dark <-> Light tema gecisi — ekran guncellemesi durdurulup toplu yapilir."""
+        """Dark <-> Light tema gecisi."""
         self.btn_theme.configure(state="disabled")
 
         if self._theme_mode == "dark":
@@ -134,26 +134,9 @@ class VastarionApp(ctk.CTk):
 
         set_theme_mode(self._theme_mode)
 
-        # 1) Ekran cizimini durdur — kullanici ara hali gormez
-        try:
-            self.wm_attributes("-alpha", 0.0)
-        except Exception:
-            pass
-
-        # 2) CTk appearance mode'u degistir (CTk widget icleri icin gerekli)
+        # CTk appearance mode + kendi renklerimiz
         ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
-
-        # 3) Kendi renklerimizi uygula
         self._refresh_all_theme()
-
-        # 4) Tum bekleyen cizim islerini bitir
-        self.update_idletasks()
-
-        # 5) Ekrani tek seferde goster
-        try:
-            self.wm_attributes("-alpha", 1.0)
-        except Exception:
-            pass
 
         self.btn_theme.configure(state="normal")
 
