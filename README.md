@@ -5,23 +5,23 @@
 <h1 align="center">Vastarion Scanner</h1>
 <p align="center">
   <strong>File Intelligence Engine</strong><br>
-  <em>Yerel dosyalarinizi iceriklerine gore tarayan ve aninda aramanizi saglayan masaustu uygulamasi.</em>
+  <em>Yerel dosyalarinizi icerik bazli tarayan ve aninda arama yapan masaustu uygulamasi.</em>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/version-1.2.0-C6A96B?style=flat-square" alt="v1.2.0">
   <img src="https://img.shields.io/badge/python-3.12-blue?style=flat-square" alt="Python 3.12">
   <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square" alt="Windows">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-1.2.0-gold?style=flat-square" alt="v1.2.0">
 </p>
 
 ---
 
 ## Ne Ise Yarar?
 
-Vastarion Scanner, bilgisayarinizdaki **PDF, Word, Excel ve metin dosyalarinin icerigini** tarayan, indeksleyen ve milisaniye hizinda arama yapmanizi saglayan bir masaustu arama motorudur.
+Vastarion Scanner, bilgisayarinizdaki **Word, Excel, PDF ve metin dosyalarinin icerigini** tarar ve anahtar kelimeye gore aninda bulur.
 
-**Ornek:** Arama kutusuna `"Ahmet Yilmaz"` yazdiginizda, bu ismin gectigi tum dosyalari (Word, Excel, PDF), dosyanin bulundugu klasoru ve icerikteki eslesen bolumu aninda gosterir.
+**Ornek:** Arama kutusuna `Ahmet Yilmaz` yazdiginizda uygulama tum indeksli dosyalarin icerigini tarar, hangi dosyada bu ismin gectigini, hangi klasorde oldugunu ve dosyanin neresinde eslestigini gosterir.
 
 ### Desteklenen Dosya Turleri
 
@@ -36,53 +36,39 @@ Vastarion Scanner, bilgisayarinizdaki **PDF, Word, Excel ve metin dosyalarinin i
 
 ## Ozellikler
 
-- **Full-Text Search** — SQLite FTS5 altyapisi ile milisaniye cevap suresi
+- **Full-Text Search** — FTS5 altyapisi ile milisaniye cevap suresi
 - **Icerik Tarama** — Dosya adi + dosya icerigi uzerinden arama
-- **Baglamsal Snippet** — Eslesen kelimenin gecen cumlesini onizleme panelinde gosterir
+- **Snippet Gosterimi** — Eslesen kismin baglam icinde onizlemesi
 - **Highlight** — Eslesen kelimeler altin renkle vurgulanir
-- **Klasor Yonetimi** — Taranacak klasorleri ekleyin/cikarin
-- **Canli Izleme** — Dosya degisiklikleri otomatik algilanir (30sn aralikla)
-- **Akilli Duplicate Engelleme** — OneDrive sync kopyalarini otomatik filtreler
-- **Dosya Duzenleme** — Kurallar tanimlayarak dosyalari otomatik kategorilere ayirma
-- **Guvenilirlik Puanlamasi** — Yesil (kesin eslesme) / Turuncu (olasi eslesme) gosterimi
-- **Dark / Light Tema** — Iki tema arasinda aninda gecis
+- **Klasor Yonetimi** — Istediginiz klasorleri taramaya ekleyin/cikarin
+- **Canli Izleme** — Watcher ile dosyalar 30 saniyede bir otomatik guncellenir
+- **Duplicate Engelleme** — OneDrive sync kopyalarini akillica filtreler
+- **Akilli Dosya Duzenleme** — Icerige gore otomatik kategorilere ayirma (kopyalama)
+- **Agirlikli Puanlama** — Spesifik keyword'ler daha yuksek puan alir
+- **Guvenilirlik Renkleri** — Yesil (kesin eslesme) / Turuncu (olasi eslesme)
+- **Arama Gecmisi** — Son 20 aramayi saklar, tek tikla tekrar arama
+- **Lazy Loading** — Buyuk sonuc setlerinde donma olmadan sayfalama
+- **Dark / Light Tema** — Tek tikla gecis
 - **Tek EXE** — Kurulum gerektirmez, cift tikla calistir
-
----
-
-## Ekran Goruntuleri
-
-<details>
-<summary>Arayuz onizlemesi</summary>
-
-Uygulama acildiginda:
-- Sol ustte Vastarion logosu
-- Genis arama cubuklari
-- Sonuclar tablosu: Dosya Adi | Eslesme | Konum | Tur | Boyut
-- Altinda onizleme paneli (highlight ile)
-- Duzenle sekmesinde kategorileme ve guvenilirlik renkleri
-
-</details>
 
 ---
 
 ## Kurulum
 
 ### Hazir EXE (Onerilen)
-```
-dist/VastarionScanner.exe
-```
-Cift tiklayin, kullanmaya baslayin. Kurulum gerektirmez.
+
+[Releases](https://github.com/callmeouz/vastarion-scanner/releases) sayfasindan `VastarionScanner.exe` dosyasini indirin ve calistirin.
 
 ### Kaynak Koddan
+
 ```bash
-# 1. Bagimliliklari kur
+# Bagimliliklari kur
 pip install -r requirements.txt
 
-# 2. Calistir
+# Calistir
 python main.py
 
-# 3. (Opsiyonel) EXE olustur
+# (Opsiyonel) EXE olustur
 python build.py
 ```
 
@@ -93,31 +79,31 @@ python build.py
 ```
 vastarion-scanner/
 ├── main.py              # Giris noktasi
-├── config.py            # Design system + tema ayarlari
+├── config.py            # Design system + ayarlar
 ├── logger.py            # Logging
 ├── build.py             # PyInstaller build script
 │
 ├── core/
 │   ├── search.py        # FTS5 arama motoru + snippet
-│   ├── worker.py        # Arka plan indeksleme (threading)
-│   ├── watcher.py       # Dosya degisiklik izleme
+│   ├── worker.py        # Arka plan indeksleme
+│   ├── watcher.py       # Dosya degisiklik izleme (30s)
 │   ├── scanner.py       # Dizin tarama
-│   ├── organizer.py     # Dosya duzenleme + puanlama motoru
+│   ├── organizer.py     # Icerik bazli dosya duzenleme
 │   └── parsers.py       # Dosya icerik cikarma (docx/xlsx/pdf/txt)
 │
 ├── db/
 │   └── database.py      # SQLite + FTS5 veritabani
 │
 ├── ui/
-│   └── app.py           # CustomTkinter arayuz (dark/light tema)
+│   └── app.py           # CustomTkinter arayuz (dark/light)
 │
 ├── utils/
-│   ├── file_utils.py    # Dosya boyutu formatlama
+│   ├── file_utils.py    # MD5 hash, boyut formatlama
 │   └── text_utils.py    # Turkce metin normalizasyonu
 │
 ├── assets/
-│   ├── logo.png         # Vastarion logosu
-│   └── logo.ico         # Windows ikon
+│   ├── logo.png
+│   └── logo.ico
 │
 └── tests/
     └── test_core.py     # Unit testler (29 test)
@@ -130,45 +116,45 @@ vastarion-scanner/
 | Bilesen | Teknoloji |
 |---------|-----------|
 | Dil | Python 3.12 |
-| UI Framework | CustomTkinter |
-| Veritabani | SQLite + FTS5 (Full-Text Search) |
-| Arama | FTS5 tokenizer + LIKE fallback |
-| PDF | pdfplumber |
-| Word | python-docx |
-| Excel | openpyxl |
+| UI | CustomTkinter |
+| Veritabani | SQLite + FTS5 |
+| Arama | FTS5 prefix match + LIKE fallback |
+| PDF okuma | PyMuPDF (fitz) |
+| Word okuma | python-docx |
+| Excel okuma | openpyxl |
 | EXE | PyInstaller |
 
 ### Arama Akisi
+
 ```
-Kullanici sorgu girer
+Kullanici sorgu yazar
     │
     ▼
-normalize_turkish(sorgu)  ──  Turkce karakter normalizasyonu (I→i, Ş→s)
+normalize_turkish() → Turkce karakterler duzlestrilir
     │
     ▼
-FTS5 MATCH '{name normalized_content} : (sorgu*)'
+FTS5 MATCH '{name normalized_content} : (kelime*)'
     │
     ▼
-Sonuclar + Snippet cikarma
+Sonuc yoksa → LIKE fallback (%kelime%)
     │
     ▼
 Duplicate filtresi (path + filename+size)
     │
     ▼
-UI'da gosterim + altin highlight
+Snippet cikarma + Gold highlight ile gosterim
 ```
 
-### Puanlama Sistemi (Organizer)
-```
-Spesifik keyword (8+ karakter)          → +3 puan
-Cok kelimeli keyword                     → +3 puan
-Kisa/yaygin keyword                      → +1 puan
-Dosya adinda eslesme                     → +5 puan
+### Puanlama Sistemi (Duzenle sekmesi)
 
-Score >= 5  → Kesin eslesme (yesil)
-Score 2-4   → Olasi eslesme (turuncu)
-Score < 2   → Elenir (minimum esik)
-```
+| Kriter | Puan |
+|--------|------|
+| Kisa/yaygin keyword eslesmesi (ornek: burs, vize) | +1 |
+| Spesifik keyword — 8+ karakter (ornek: stipendium) | +3 |
+| Cok kelimeli keyword (ornek: ogrenci basvuru) | +3 |
+| Dosya adinda eslesme | +5 |
+
+Minimum esik: **2 puan**. Tek bir yaygin kelimenin gectigi alakasiz belgeler filtrelenir.
 
 ---
 
@@ -177,10 +163,9 @@ Score < 2   → Elenir (minimum esik)
 | Konu | Durum |
 |------|-------|
 | SQL Injection | Tum sorgular parameterized (`?` placeholder) |
-| Dosya Erisimi | Sadece okuma — hicbir dosya degistirilmez |
-| Ag Erisimi | Tamamen cevrimdisi, sunucu baglantisi yok |
+| Dosya Erisimi | Sadece okuma — orijinal dosyalar degistirilmez |
+| Ag Erisimi | Uygulama tamamen cevrimdisi, sunucu baglantisi yok |
 | Veri Depolama | Tum veriler yerel (`~/.vastarion/`) |
-| Gizlilik | Dosya icerikleri yalnizca yerel SQLite'ta saklanir |
 
 ---
 
@@ -197,35 +182,24 @@ python -m pytest tests/test_core.py::TestDatabase -v
 python -m pytest tests/test_core.py::TestSecurity -v
 ```
 
-**Test kapsami (29 test):**
-- Turkce metin normalizasyonu (I→i, I→i)
-- Snippet cikarma (baglam penceresi)
-- Veritabani CRUD (ekleme, guncelleme, silme)
-- FTS5 + LIKE arama
-- Duplicate engelleme (path + OneDrive sync)
-- Organizer puanlama mantigi
-- SQL Injection korumasi
-- Path traversal guvenlik testi
+29 test: Turkce normalizasyon, snippet cikarma, veritabani CRUD, FTS5 + LIKE arama, duplicate engelleme, puanlama sistemi, SQL injection korumasi.
 
 ---
 
 ## Yol Haritasi
 
 - [x] FTS5 tam metin arama
-- [x] Icerik snippet gosterimi
-- [x] Eslesme vurgulama (highlight)
+- [x] Icerik snippet gosterimi + highlight
 - [x] OneDrive duplicate engelleme
-- [x] Dark / Light tema destegi
+- [x] Dark / Light tema
+- [x] Icerik bazli dosya duzenleme (organizer)
+- [x] Agirlikli puanlama + guvenilirlik renkleri
+- [x] Arama gecmisi
+- [x] Lazy loading
 - [x] Tek EXE dagitim
-- [x] Dosya duzenleme (organizer) + sablon sistemi
-- [x] Guvenilirlik puanlamasi (yesil/turuncu)
-- [x] Lazy loading (ilk 50 sonuc aninda, scroll ile devami)
-- [x] Arama gecmisi (son 20 arama, dropdown ile erisim)
-- [x] Threaded onizleme (dosya icerigi arka planda okunur)
 - [ ] watchdog kutuphanesi ile gelistirilmis izleme
-- [ ] Dosya onizleme (PDF thumbnail)
-- [ ] Multiprocessing ile paralel tarama
-- [ ] Drag & drop ile klasor ekleme
+- [ ] Dosya onizleme (PDF thumbnail, resim)
+- [ ] Disa aktarma (CSV / rapor)
 
 ---
 
@@ -234,7 +208,7 @@ python -m pytest tests/test_core.py::TestSecurity -v
 **Oguzhan** — [@callmeouz](https://github.com/callmeouz)
 
 Diger projeler:
-- [vastarion-hunter](https://github.com/callmeouz/vastarion-hunter) — E-ticaret fiyat takip API (FastAPI + PostgreSQL + Redis)
+- [vastarion-hunter](https://github.com/callmeouz/vastarion-hunter) — E-ticaret fiyat takip API'si (FastAPI + PostgreSQL + Redis)
 - [vastarion-garage](https://github.com/callmeouz/vastarion-garage) — Arac yonetim sistemi (FastAPI + JWT + RBAC)
 - [vastarion-queue](https://github.com/callmeouz/vastarion-queue) — Dagitik gorev kuyrugu (Redis + WebSocket dashboard)
 
@@ -242,6 +216,4 @@ Diger projeler:
 
 ## Lisans
 
-Bu proje [MIT License](LICENSE) altinda lisanslanmistir.
-
-Copyright (c) 2026 Oguzhan (callmeouz)
+MIT License — detaylar icin [LICENSE](LICENSE) dosyasina bakin.
