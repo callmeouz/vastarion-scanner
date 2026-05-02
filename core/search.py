@@ -1,7 +1,13 @@
 import os
+import re
 import time
 from utils.text_utils import normalize_turkish, tr_lower
 from logger import log
+
+
+# FTS5 token icinde sadece harf/rakam/altcizgi guvenli sayilir.
+# Kalan karakterler (-, :, ", /, vb.) prefix-search ifadesinde hata atar.
+_FTS_TOKEN_SAFE = re.compile(r"[^\w]+", re.UNICODE)
 
 
 class SearchEngine:
@@ -10,35 +16,57 @@ class SearchEngine:
     def __init__(self, db):
         self.db = db
 
+    @staticmethod
+    def _build_fts_query(normalized: str) -> str:
+        """Normalize edilmis sorguyu guvenli bir FTS5 MATCH ifadesine cevirir.
+
+        - Ozel karakterleri temizler (FTS5'in syntax hatasi atmasini onler).
+        - Cok kisa (1 karakter) tokenleri eler — prefix * gerek yok.
+        - Sutun filtresi: {name normalized_content}
+        """
+        # Ozel karakterleri bosluga cevir, bos olanlari ele
+        cleaned = _FTS_TOKEN_SAFE.sub(" ", normalized)
+        tokens = [t for t in cleaned.split() if len(t) >= 2]
+        if not tokens:
+            return ""
+        match_query = " AND ".join(f"{t}*" for t in tokens)
+        return f"{{name normalized_content}} : ({match_query})"
+
     def search(self, query: str, limit: int = 100) -> dict:
         if not query or len(query.strip()) < 2:
             return {"elapsed_ms": 0, "count": 0, "results": []}
 
         start = time.perf_counter()
         normalized = normalize_turkish(query)
-        words = normalized.split()
-        match_query = " AND ".join([f"{w}*" for w in words])
-        fts_term = f"{{name normalized_content}} : ({match_query})"
+        fts_term = self._build_fts_query(normalized)
 
         results = []
         seen_paths = set()
         seen_files = set()
 
-        # FTS5 ile arama
-        try:
-            rows = self.db.search_fts(fts_term, limit)
-            for row in rows:
-                d = self._row_to_dict(row, query)
-                if self._is_duplicate(d, seen_paths, seen_files):
-                    continue
-                results.append(d)
-        except Exception as e:
-            log.error(f"FTS arama hatasi: {e}")
+        # FTS5 ile arama (sorgu olusturulabildiyse)
+        if fts_term:
+            try:
+                rows = self.db.search_fts(fts_term, limit)
+                for row in rows:
+                    d = self._row_to_dict(row, query)
+                    if self._is_duplicate(d, seen_paths, seen_files):
+                        continue
+                    results.append(d)
+            except Exception as e:
+                log.error(f"FTS arama hatasi: {e} | sorgu='{fts_term}'")
 
         # Sonuc yoksa LIKE fallback
         if not results:
             try:
-                pattern = f"%{normalized}%"
+                # SQL LIKE wildcard'larini escape et: %, _, \
+                like_safe = (
+                    normalized
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                pattern = f"%{like_safe}%"
                 rows = self.db.search_like(pattern, limit)
                 for row in rows:
                     d = self._row_to_dict(row, query)
@@ -53,7 +81,7 @@ class SearchEngine:
 
     @staticmethod
     def _extract_snippet(content: str, query: str, width: int = 50) -> str:
-        """Icerikten eslesen kismi cikarip '...önce [ESLESME] sonra...' seklinde dondurur."""
+        """Icerikten eslesen kismi cikarip '...once [ESLESME] sonra...' seklinde dondurur."""
         if not content:
             return ""
 

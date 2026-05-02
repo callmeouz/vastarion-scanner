@@ -1,7 +1,3 @@
-# core/organizer.py — Akilli Dosya Duzenleme Motoru
-# Taranan dosyalari iceriklerine gore kategorilere ayirip kopyalar.
-# Agirlikli skor tabanlı esleme: spesifik keyword'ler daha yuksek puan alir.
-
 import os
 import shutil
 import threading

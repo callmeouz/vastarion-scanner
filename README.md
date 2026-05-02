@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/python-3.12-blue?style=flat-square" alt="Python 3.12">
   <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square" alt="Windows">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
+  <img src="https://github.com/callmeouz/vastarion-scanner/actions/workflows/release.yml/badge.svg" alt="Build">
 </p>
 
 ---
@@ -41,7 +42,7 @@ Vastarion Scanner, bilgisayarinizdaki **Word, Excel, PDF ve metin dosyalarinin i
 - **Snippet Gosterimi** — Eslesen kismin baglam icinde onizlemesi
 - **Highlight** — Eslesen kelimeler altin renkle vurgulanir
 - **Klasor Yonetimi** — Istediginiz klasorleri taramaya ekleyin/cikarin
-- **Canli Izleme** — Watcher ile dosyalar 30 saniyede bir otomatik guncellenir
+- **Canli Izleme** — watchdog (event-driven) + 30s polling fallback ile dosya degisiklikleri algilama
 - **Duplicate Engelleme** — OneDrive sync kopyalarini akillica filtreler
 - **Akilli Dosya Duzenleme** — Icerige gore otomatik kategorilere ayirma (kopyalama)
 - **Agirlikli Puanlama** — Spesifik keyword'ler daha yuksek puan alir
@@ -57,7 +58,8 @@ Vastarion Scanner, bilgisayarinizdaki **Word, Excel, PDF ve metin dosyalarinin i
 
 ### Hazir EXE (Onerilen)
 
-[Releases](https://github.com/callmeouz/vastarion-scanner/releases) sayfasindan `VastarionScanner.exe` dosyasini indirin ve calistirin.
+[Releases](https://github.com/callmeouz/vastarion-scanner/releases) sayfasindan son surumu indirin.
+Yeni bir `v*` tag'i push'landikca GitHub Actions otomatik olarak `VastarionScanner.exe` olusturup Release'e yukler.
 
 ### Kaynak Koddan
 
@@ -197,7 +199,9 @@ python -m pytest tests/test_core.py::TestSecurity -v
 - [x] Arama gecmisi
 - [x] Lazy loading
 - [x] Tek EXE dagitim
-- [ ] watchdog kutuphanesi ile gelistirilmis izleme
+- [x] watchdog ile event-driven dosya izleme
+- [ ] Disa aktarma (arama sonuclari CSV/TXT)
+- [ ] Sistem tepsisi (arka planda calisma)
 - [ ] Dosya onizleme (PDF thumbnail, resim)
 - [ ] Disa aktarma (CSV / rapor)
 

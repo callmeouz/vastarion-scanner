@@ -159,11 +159,13 @@ class Database:
         return cursor.fetchall()
 
     def search_like(self, pattern: str, limit: int = 100) -> list:
+        # ESCAPE '\' — pattern icindeki %/_/\ literal yorumlanir
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT path, name, ext, directory, size, mtime, content
             FROM files
-            WHERE normalized_content LIKE ? OR name LIKE ?
+            WHERE normalized_content LIKE ? ESCAPE '\\'
+               OR name LIKE ? ESCAPE '\\'
             ORDER BY mtime DESC
             LIMIT ?
         """, (pattern, pattern, limit))

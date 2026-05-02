@@ -12,7 +12,6 @@ def scan_directory(base_path: str):
         return
 
     for root, dirs, files in os.walk(base_path):
-        # Istenmeyen klasorleri atla (os.walk icinde dirs listesini degistirerek)
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
 
         for file in files:

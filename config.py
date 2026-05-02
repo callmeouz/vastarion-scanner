@@ -2,81 +2,53 @@ import os
 import json
 from pathlib import Path
 
-# Uygulama Bilgileri
 APP_NAME = "Vastarion Scanner"
 APP_VERSION = "1.2.0"
 
-# Dizin Ayarlari
 USER_HOME = Path.home()
 APP_DIR = USER_HOME / ".vastarion"
 DB_PATH = APP_DIR / "index.db"
 LOG_PATH = APP_DIR / "vastarion.log"
 SETTINGS_PATH = APP_DIR / "settings.json"
 
-# ═══════════════════════════════════════════════
-# DESIGN SYSTEM — Dual Theme
-# ═══════════════════════════════════════════════
-
 THEME_DARK = {
-    # Backgrounds (derinlik katmanlari)
-    "bg":           "#0B0B0C",   # En derin — ana arka plan
-    "surface":      "#121214",   # Kartlar, paneller
-    "surface2":     "#1A1A1D",   # Ustune cikan elementler
-    "hover":        "#202024",   # Hover durumu
-
-    # Borders
-    "border":       "#2A2A2E",   # Standart kenar
-    "border_subtle":"#1E1E22",   # Ince, hafif kenar
-
-    # Accent (Gold)
-    "gold":         "#C6A96B",   # Primary accent
-    "gold_light":   "#D4BC85",   # Gold hover / active
-    "gold_dim":     "#8A7A50",   # Gold muted
-
-    # Text
-    "text_primary": "#EAEAEA",   # Ana metin
-    "text_secondary":"#9A9AA0",  # Ikincil metin
-    "text_muted":   "#6A6A70",   # Soluk metin
-
-    # Semantic
+    "bg":           "#0B0B0C",
+    "surface":      "#121214",
+    "surface2":     "#1A1A1D",
+    "hover":        "#202024",
+    "border":       "#2A2A2E",
+    "border_subtle":"#1E1E22",
+    "gold":         "#C6A96B",
+    "gold_light":   "#D4BC85",
+    "gold_dim":     "#8A7A50",
+    "text_primary": "#EAEAEA",
+    "text_secondary":"#9A9AA0",
+    "text_muted":   "#6A6A70",
     "success":      "#4ade80",
     "error":        "#f87171",
     "warning":      "#fbbf24",
 }
 
 THEME_LIGHT = {
-    # Backgrounds
-    "bg":           "#F5F5F0",
-    "surface":      "#FFFFFF",
-    "surface2":     "#F0EDE8",
-    "hover":        "#E8E5E0",
-
-    # Borders
-    "border":       "#D4D0CC",
-    "border_subtle":"#E0DDD8",
-
-    # Accent (Gold — daha koyu, okunabilir)
+    "bg":           "#F5F2EC",
+    "surface":      "#FBF9F4",
+    "surface2":     "#EFEAE0",
+    "hover":        "#E5DFD2",
+    "border":       "#C9C2B5",
+    "border_subtle":"#DDD7CB",
     "gold":         "#8B6914",
-    "gold_light":   "#A07A1A",
-    "gold_dim":     "#C4A855",
-
-    # Text (yuksek kontrast)
-    "text_primary": "#1A1A1A",
-    "text_secondary":"#555555",
-    "text_muted":   "#888888",
-
-    # Semantic
-    "success":      "#16a34a",
-    "error":        "#dc2626",
-    "warning":      "#d97706",
+    "gold_light":   "#6F5410",
+    "gold_dim":     "#B89D5A",
+    "text_primary": "#2A2A2A",
+    "text_secondary":"#4A4A4A",
+    "text_muted":   "#7A7468",
+    "success":      "#15803d",
+    "error":        "#b91c1c",
+    "warning":      "#b45309",
 }
 
-# ═══════════════════════════════════════════════
-# SETTINGS — Kalici tercihler
-# ═══════════════════════════════════════════════
 
 def load_settings() -> dict:
-    """Kullanici tercihlerini JSON'dan yukler."""
     try:
         if SETTINGS_PATH.exists():
             with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
@@ -87,7 +59,6 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict):
-    """Kullanici tercihlerini JSON'a yazar."""
     try:
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
@@ -96,28 +67,23 @@ def save_settings(settings: dict):
 
 
 def get_active_theme_mode() -> str:
-    """Aktif tema modunu dondurur: 'dark' veya 'light'."""
     settings = load_settings()
     return settings.get("theme_mode", "dark")
 
 
 def set_theme_mode(mode: str):
-    """Tema modunu kaydeder."""
     settings = load_settings()
     settings["theme_mode"] = mode
     save_settings(settings)
 
 
 def get_active_theme() -> dict:
-    """Aktif temaya gore renk sozlugunu dondurur."""
     mode = get_active_theme_mode()
     return THEME_LIGHT if mode == "light" else THEME_DARK
 
 
-# Geriye uyumluluk — mevcut kodun calismasi icin
 THEME = get_active_theme()
 
-# Otomatik Taranacak Klasorler
 DEFAULT_SCAN_PATHS = [
     USER_HOME / "Documents",
     USER_HOME / "Desktop",
@@ -131,7 +97,6 @@ if _onedrive.exists():
         if _p.exists():
             DEFAULT_SCAN_PATHS.append(_p)
 
-# Tarama Ayarlari
 SUPPORTED_EXTENSIONS = {
     ".txt", ".pdf", ".docx", ".xlsx", ".csv",
     ".py", ".js", ".html", ".css", ".json", ".md"
@@ -144,15 +109,14 @@ IGNORE_DIRS = {
     ".vastarion", ".cache", "Temp"
 }
 
-# Dosya Duzenleme Sablonlari — Egitim Ataseligi
 ORGANIZER_TEMPLATES = {
     "Egitim Ataseligi": [
         {"folder_name": "Burslu Ogrenciler", "keywords": "burs, stipendium, scholarship, burslu, YLSY, YTB, burslandirma"},
-        {"folder_name": "Ogretmenler", "keywords": "öğretmen, lehrer, teacher, maarif, okutman, ogretmen, ögretmen"},
+        {"folder_name": "Ogretmenler", "keywords": "ogretmen, lehrer, teacher, maarif, okutman"},
         {"folder_name": "Askerlik", "keywords": "askerlik, tecil, sevk, terhis, celp, askerlik subesi, wehrdienst"},
-        {"folder_name": "Gelecek Ogrenciler", "keywords": "başvuru, kabul, zulassung, admission, kayıt, basvuru, immatrikulation, ogrenci basvuru"},
+        {"folder_name": "Gelecek Ogrenciler", "keywords": "basvuru, kabul, zulassung, admission, kayit, immatrikulation, ogrenci basvuru"},
         {"folder_name": "Vize ve Pasaport", "keywords": "vize, pasaport, visum, aufenthaltstitel, oturma izni, ikamet"},
-        {"folder_name": "Resmi Yazilar", "keywords": "resmi yazi, yazışma, ust yazi, bakanlik, büyükelçilik, konsolosluk, ataselige"},
+        {"folder_name": "Resmi Yazilar", "keywords": "resmi yazi, yazisma, ust yazi, bakanlik, buyukelcilik, konsolosluk, ataselige"},
     ]
 }
 

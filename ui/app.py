@@ -1,6 +1,3 @@
-# ui/app.py — Premium Dark/Light UI
-# Design System: Premium Gold + Layered Surfaces + Dual Theme
-
 import os
 import sys
 import queue
@@ -71,13 +68,15 @@ class VastarionApp(ctk.CTk):
         self._org_target_dir = ctk.StringVar(value="")
         self._org_include_unmatched = ctk.BooleanVar(value=True)
 
+        self._themable = []
+
         self._build_ui()
         self._process_queue()
         self._update_stats()
         self._apply_ctk_mode()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ── Helpers ──────────────────────────────────────────
+    # Helpers
 
     def _set_icon(self):
         base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'assets'))
@@ -117,67 +116,196 @@ class VastarionApp(ctk.CTk):
         """CustomTkinter appearance mode'u ayarlar."""
         ctk.set_appearance_mode("dark" if self._theme_mode == "dark" else "light")
 
-    # ══════════════════════════════════════════════════════
-    # THEME TOGGLE
-    # ══════════════════════════════════════════════════════
+    # THEME TOGGLE — Async, donma yok
+
+    def _themable_add(self, widget, role: str, **extras):
+        """Widget'i themable registry'ye ekler.
+
+        role: 'primary_btn', 'ghost_btn', 'danger_btn', 'label_primary',
+              'label_secondary', 'label_muted', 'label_gold',
+              'canvas_gold', 'canvas_bg', 'checkbox', 'scrollable_frame',
+              'scrollbar'
+        extras: ileride ihtiyac olursa ek bilgi (ornek: 'hover_keeps_default')
+        """
+        self._themable.append({"widget": widget, "role": role, **extras})
+        return widget
 
     def _toggle_theme(self):
-        """Dark <-> Light tema gecisi.
+        """Dark <-> Light tema gecisi — Senkron, tek seferde.
 
-        NOT: ctk.set_appearance_mode() CAGRILMIYOR — o fonksiyon tum
-        CustomTkinter widget agacini tek tek gezer ve her birini
-        yeniden boyar. 200+ widget'ta 500ms+ surer, donmaya sebep olur.
-
-        Bunun yerine sadece kendi renk dict'imizi (self.T) degistirip
-        bildigimiz widget'lari tek tek configure ediyoruz — 10x hizli.
+        Strateji:
+        1. Eski->Yeni renk haritasi cikar (ornek: dark surface -> light surface).
+        2. ctk.set_appearance_mode cagir — CTk built-in widget'lar (scrollbar,
+           checkbox, sekme baslik canvasi) icin sart.
+        3. Named widget'lara ozel renkleri uygula (_refresh_all_theme).
+        4. Tum widget agacini gezip ESKI tema rengini gordugumu YENI tema rengiyle
+           degistir — boylece Duzenle sekmesi icin tabview lazy-render eden tum
+           gizli widget'lar da yakalanir.
+        5. Tek update_idletasks ile sonra repaint et.
         """
-        self.btn_theme.configure(state="disabled")
+        if not hasattr(self, "btn_theme"):
+            return
 
-        if self._theme_mode == "dark":
-            self._theme_mode = "light"
-            self.T = THEME_LIGHT
+        new_mode = "light" if self._theme_mode == "dark" else "dark"
+
+        # Eski tema sozlugu (renk haritasi icin lazim)
+        T_old = THEME_DARK if self._theme_mode == "dark" else THEME_LIGHT
+        T_new = THEME_LIGHT if new_mode == "light" else THEME_DARK
+
+        # Eski renkleri yeni renklere maple
+        # Hem string -> string hem CTk'nin (light, dark) tuple varyasyonu
+        color_map = {}
+        for k in T_old:
+            if k in T_new and T_old[k] != T_new[k]:
+                color_map[T_old[k].lower()] = T_new[k]
+
+        # Treeview seleksiyon arka planlari (hardcoded olarak gecen renkler)
+        if new_mode == "light":
+            color_map["#3a3220"] = "#E8D9A8"
+            color_map["#2a2518"] = "#E8D9A8"
         else:
-            self._theme_mode = "dark"
-            self.T = THEME_DARK
+            color_map["#e8d9a8"] = "#3A3220"
+            color_map["#f0e8d0"] = "#3A3220"
 
-        set_theme_mode(self._theme_mode)
+        # State'i guncelle
+        self._theme_mode = new_mode
+        self.T = T_new
+        set_theme_mode(new_mode)
 
-        # sadece kendi renklerimizi guncelle
+        # CTk built-in widget mode (scrollbar arrows, checkbox marks, segment headers)
+        try:
+            ctk.set_appearance_mode(new_mode)
+        except Exception as e:
+            log.warning(f"set_appearance_mode hatasi: {e}")
+
+        # Bizim ozel renklerimizi named widget'lara uygula
         self._refresh_all_theme()
 
-        self.btn_theme.configure(state="normal")
+        # Safety net: tum widget agacini gezip eski-yeni renk remap
+        # (CTkTabview lazy-render'inde gozden kacanlari yakalar)
+        try:
+            self._sweep_widget_tree(self, color_map)
+        except Exception as e:
+            log.warning(f"Widget tree sweep hatasi: {e}")
+
+        # Buton ikonu
+        icon = "☀" if new_mode == "dark" else "🌙"
+        self.btn_theme.configure(text=icon, text_color=T_new["text_primary"])
+
+        # Tek seferlik repaint
+        self.update_idletasks()
+
+    def _sweep_widget_tree(self, root, color_map):
+        """Widget agacini recursive gezerek eski tema renklerini yenisine cevirir.
+
+        CTkFrame/CTkLabel/CTkButton widget'larin fg_color, text_color,
+        border_color, hover_color gibi propertylerini cget ile okur, eski
+        tema renginin haritasinda varsa yenisine configure eder.
+
+        Bu, CTkTabview gibi lazy-render eden widget'lardaki gizli iceriklerin
+        de tema gecisinde guncellenmesini saglar.
+        """
+        # CTk widget'lar bu propertyleri tasiyabilir
+        props = ("fg_color", "text_color", "border_color", "hover_color",
+                 "progress_color", "placeholder_text_color",
+                 "checkmark_color", "button_color", "button_hover_color",
+                 "selected_color", "selected_hover_color",
+                 "unselected_color", "unselected_hover_color",
+                 "scrollbar_button_color", "scrollbar_button_hover_color")
+
+        def _remap_value(val):
+            """Tek bir renk degerini haritada arar."""
+            if isinstance(val, str):
+                lo = val.lower()
+                if lo in color_map:
+                    return color_map[lo]
+            elif isinstance(val, (list, tuple)) and len(val) == 2:
+                # CTk (light, dark) tuple varyasyonu
+                a = val[0].lower() if isinstance(val[0], str) else None
+                b = val[1].lower() if isinstance(val[1], str) else None
+                new_a = color_map.get(a) if a else None
+                new_b = color_map.get(b) if b else None
+                if new_a or new_b:
+                    return (new_a or val[0], new_b or val[1])
+            return None
+
+        def _walk(w):
+            # tk.Canvas ve tk.Listbox icin bg attribute farkli (CTk degil)
+            try:
+                if isinstance(w, tk.Canvas):
+                    cur = w.cget("bg")
+                    new = _remap_value(cur)
+                    if new and isinstance(new, str):
+                        w.configure(bg=new)
+            except Exception:
+                pass
+
+            # CTkScrollableFrame icin ozel patch: ic _parent_canvas
+            if isinstance(w, ctk.CTkScrollableFrame):
+                try:
+                    cur_fg = w.cget("fg_color")
+                    target = _remap_value(cur_fg) or self.T["surface"]
+                    if isinstance(target, (list, tuple)):
+                        target = target[0] if self._theme_mode == "light" else target[1]
+                    self._patch_scrollable_canvas(w, target)
+                except Exception:
+                    pass
+
+            # CTk widget'lar
+            for prop in props:
+                try:
+                    cur = w.cget(prop)
+                except Exception:
+                    continue
+                new = _remap_value(cur)
+                if new is not None:
+                    try:
+                        w.configure(**{prop: new})
+                    except Exception:
+                        pass
+
+            # Cocuk widget'lara in
+            try:
+                for child in w.winfo_children():
+                    _walk(child)
+            except Exception:
+                pass
+
+        _walk(root)
 
     def _refresh_all_theme(self):
         """Tum widget'lari ve stilleri yeni temaya gore gunceller.
 
-        CTkEntry/CTkTextbox'larin fg_color'u 'transparent' ise
-        tekrar set edilemez (CTk hatasi). Bu yuzden sadece
-        text_color gibi guvenli property'ler guncellenir.
+        Iki asama:
+        1. Sabit (named) widget'lar: kart frame'leri, treeview, listbox vs.
+        2. Registry uzerinden inline widget'lar: butonlar, label'lar, canvas'lar.
+
+        Hata yakalama her widget icin ayri — bir widget destroy edilmis olsa
+        bile diger guncelleme zinciri kirilmaz.
         """
         T = self.T
-        treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
+        treeview_select_bg = "#3A3220" if self._theme_mode == "dark" else "#E8D9A8"
 
-        # ── Ana pencere ──
+        # Named (sabit) widget'lar
+
+        # Ana pencere
         self.configure(fg_color=T["bg"])
 
-        # ── Theme toggle button ──
-        icon = "☀" if self._theme_mode == "dark" else "🌙"
-        self.btn_theme.configure(text=icon, fg_color=T["surface2"],
-            hover_color=T["hover"], text_color=T["gold"])
+        # Header
+        self._safe(self._header_frame, fg_color=T["bg"])
+        self._safe(self.lbl_stats, text_color=T["text_muted"])
 
-        # ── Header ──
-        self._header_frame.configure(fg_color=T["bg"])
-        self.lbl_stats.configure(text_color=T["text_muted"])
-
-        # ── Search bar (entry'nin fg_color'una DOKUNMA — transparent) ──
-        self._search_frame.configure(fg_color=T["surface"], border_color=T["border"])
-        self.entry_search.configure(text_color=T["text_primary"],
+        # Search bar (entry'nin fg_color'una DOKUNMA — transparent)
+        self._safe(self._search_frame, fg_color=T["surface"], border_color=T["border"])
+        self._safe(self.entry_search,
+            text_color=T["text_primary"],
             placeholder_text_color=T["text_muted"])
-        self._btn_history.configure(hover_color=T["hover"], text_color=T["text_muted"])
-        self.lbl_search_time.configure(text_color=T["text_muted"])
+        self._safe(self._btn_history,
+            hover_color=T["hover"], text_color=T["text_muted"])
+        self._safe(self.lbl_search_time, text_color=T["text_muted"])
 
-        # ── Tabs ──
-        self.tabs.configure(
+        # Tabs
+        self._safe(self.tabs,
             fg_color=T["bg"],
             segmented_button_fg_color=T["surface"],
             segmented_button_selected_color=T["surface2"],
@@ -193,115 +321,240 @@ class VastarionApp(ctk.CTk):
             except Exception:
                 pass
 
-        # ── Kartlar ──
-        self._tree_card.configure(fg_color=T["surface"], border_color=T["border"])
-        self._preview_card.configure(fg_color=T["surface"], border_color=T["border"])
-        self._folder_list_card.configure(fg_color=T["surface"], border_color=T["border"])
+        # Sonuclar sekmesi: kartlar
+        self._safe(self._tree_card, fg_color=T["surface"], border_color=T["border"])
+        self._safe(self._preview_card, fg_color=T["surface"], border_color=T["border"])
+        self._safe(self._folder_list_card, fg_color=T["surface"], border_color=T["border"])
 
-        # ── ttk Treeview stilleri ──
-        style = ttk.Style()
-        style.configure("V.Treeview",
-            background=T["surface"], foreground=T["text_primary"],
-            fieldbackground=T["surface"])
-        style.configure("V.Treeview.Heading",
-            background=T["surface2"], foreground=T["text_secondary"])
-        style.map("V.Treeview",
-            background=[("selected", treeview_select_bg)],
-            foreground=[("selected", T["gold_light"])])
+        # ttk Treeview stilleri (V + Org)
+        self._apply_treeview_styles(treeview_select_bg)
 
-        # ── Result count + Preview ──
-        self.lbl_result_count.configure(text_color=T["text_muted"])
-        self.txt_preview.configure(fg_color=T["surface2"], text_color=T["text_secondary"])
+        # Result count + Preview
+        self._safe(self.lbl_result_count, text_color=T["text_muted"])
+        self._safe(self.txt_preview,
+            fg_color=T["surface2"], text_color=T["text_secondary"])
 
-        # ── Treeview tags ──
-        self.tree.tag_configure("hover", background=T["hover"], foreground=T["gold_light"])
-        self.tree.tag_configure("normal", background=T["surface"], foreground=T["text_primary"])
+        # Treeview tag'leri
+        try:
+            self.tree.tag_configure("hover",
+                background=T["hover"], foreground=T["gold_light"])
+            self.tree.tag_configure("normal",
+                background=T["surface"], foreground=T["text_primary"])
+        except Exception:
+            pass
 
-        # ── Folder listbox ──
-        self.folder_listbox.configure(bg=T["surface"], fg=T["text_primary"],
-            selectbackground=treeview_select_bg, selectforeground=T["gold"])
+        # Folder listbox (tk.Listbox — CTk degil)
+        try:
+            self.folder_listbox.configure(
+                bg=T["surface"], fg=T["text_primary"],
+                selectbackground=treeview_select_bg,
+                selectforeground=T["gold"])
+        except Exception:
+            pass
 
-        # ── Butonlar & Progress ──
-        self.btn_scan.configure(fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"])
-        self.progress.configure(fg_color=T["surface2"], progress_color=T["gold"])
-        self.lbl_progress.configure(text_color=T["text_muted"])
+        # Scan butonu + Progress
+        self._safe(self.btn_scan,
+            fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"])
+        self._safe(self.progress,
+            fg_color=T["surface2"], progress_color=T["gold"])
+        self._safe(self.lbl_progress, text_color=T["text_muted"])
 
-        # ── Context menu ──
-        self.ctx_menu.configure(bg=T["surface2"], fg=T["text_primary"],
-            activebackground=T["hover"], activeforeground=T["gold"])
+        # Context menu (tk.Menu)
+        try:
+            self.ctx_menu.configure(
+                bg=T["surface2"], fg=T["text_primary"],
+                activebackground=T["hover"], activeforeground=T["gold"])
+        except Exception:
+            pass
 
-        # ── Status bar ──
-        self._status_frame.configure(fg_color=T["surface"])
-        self.lbl_status.configure(text_color=T["text_muted"])
-        self.lbl_watcher.configure(text_color=T["success"])
+        # Status bar
+        self._safe(self._status_frame, fg_color=T["surface"])
+        self._safe(self.lbl_status, text_color=T["text_muted"])
+        self._safe(self.lbl_watcher, text_color=T["success"])
 
-        # ── About tab ──
-        self.info_text.configure(fg_color=T["surface"], text_color=T["text_secondary"],
+        # About tab
+        self._safe(self.info_text,
+            fg_color=T["surface"], text_color=T["text_secondary"],
             border_color=T["border"])
 
-        # ── Organizer tab ──
+        # Organizer sekmesi (named widget'lar)
         self._refresh_organizer_theme()
 
+        # Registry: inline olusturulmus widget'lar
+        self._apply_registry_theme()
+
+    def _safe(self, widget, **kwargs):
+        """Widget configure'u guvenli sar — destroy edilmiş widget'larda hata yutar."""
+        try:
+            widget.configure(**kwargs)
+        except Exception:
+            pass
+
+    def _patch_scrollable_canvas(self, scrollable_frame, color):
+        """CTkScrollableFrame'in ic tk.Canvas ve ic frame'ini elle renklendirir.
+
+        CTkScrollableFrame'in _parent_canvas (tk.Canvas) attribute'u CTk tarafindan
+        yonetilir ama appearance_mode degisiminde her zaman dogru renge gecmez.
+        Bu yuzden referansa erisip dogrudan bg ayarliyoruz.
+        """
+        for attr in ("_parent_canvas", "_scrollbar"):
+            inner = getattr(scrollable_frame, attr, None)
+            if inner is not None:
+                try:
+                    if isinstance(inner, tk.Canvas):
+                        inner.configure(bg=color, highlightthickness=0)
+                    else:
+                        inner.configure(fg_color=color)
+                except Exception:
+                    pass
+
+    def _apply_treeview_styles(self, treeview_select_bg):
+        """Tum ttk.Treeview stillerini (V ve Org) yeni temaya uyarlar."""
+        T = self.T
+        style = ttk.Style()
+        for style_name in ("V.Treeview", "Org.Treeview"):
+            try:
+                style.configure(style_name,
+                    background=T["surface"], foreground=T["text_primary"],
+                    fieldbackground=T["surface"])
+                style.configure(f"{style_name}.Heading",
+                    background=T["surface2"], foreground=T["text_secondary"])
+                style.map(style_name,
+                    background=[("selected", treeview_select_bg)],
+                    foreground=[("selected", T["gold_light"])])
+            except Exception:
+                pass
+
+    def _apply_registry_theme(self):
+        """Registry'deki inline widget'lari role'lerine gore boyar."""
+        T = self.T
+        for entry in self._themable:
+            w = entry.get("widget")
+            role = entry.get("role")
+            if w is None:
+                continue
+            try:
+                if not w.winfo_exists():
+                    continue
+            except Exception:
+                continue
+
+            try:
+                if role == "primary_btn":
+                    w.configure(
+                        fg_color=T["gold"], hover_color=T["gold_light"],
+                        text_color=T["bg"])
+                elif role == "ghost_btn":
+                    w.configure(
+                        fg_color=T["surface2"], hover_color=T["hover"],
+                        text_color=T["text_secondary"], border_color=T["border"])
+                elif role == "ghost_btn_gold":
+                    w.configure(
+                        fg_color=T["surface2"], hover_color=T["hover"],
+                        text_color=T["gold"], border_color=T["border"])
+                elif role == "ghost_btn_primary_text":
+                    w.configure(
+                        fg_color=T["surface2"], hover_color=T["hover"],
+                        text_color=T["text_primary"], border_color=T["border"])
+                elif role == "danger_btn":
+                    w.configure(
+                        fg_color="transparent", hover_color=T["hover"],
+                        text_color=T["error"], border_color=T["border"])
+                elif role == "danger_btn_borderless":
+                    w.configure(
+                        fg_color="transparent", hover_color=T["hover"],
+                        text_color=T["error"])
+                elif role == "label_primary":
+                    w.configure(text_color=T["text_primary"])
+                elif role == "label_secondary":
+                    w.configure(text_color=T["text_secondary"])
+                elif role == "label_muted":
+                    w.configure(text_color=T["text_muted"])
+                elif role == "label_gold":
+                    w.configure(text_color=T["gold"])
+                elif role == "canvas_gold":
+                    # tk.Canvas — gold cizgiler
+                    w.configure(bg=T["gold"])
+                elif role == "canvas_gold_dim":
+                    w.configure(bg=T["gold_dim"])
+                elif role == "canvas_bg":
+                    w.configure(bg=T["bg"])
+                elif role == "checkbox":
+                    w.configure(
+                        text_color=T["text_secondary"],
+                        fg_color=T["gold"], hover_color=T["gold_light"],
+                        checkmark_color=T["bg"])
+                elif role == "scrollable_frame":
+                    # CTkScrollableFrame — fg_color="transparent" varsayim
+                    w.configure(fg_color="transparent")
+                elif role == "transparent_frame":
+                    w.configure(fg_color="transparent")
+            except Exception:
+                # Bir widget'in configure'i basarisiz olsa bile devam et
+                pass
 
     def _refresh_organizer_theme(self):
-        """Organizer sekmesinin renklerini günceller."""
+        """Organizer sekmesinin sabit (named) widget'larini gunceller."""
         T = self.T
         try:
-            self._org_target_frame.configure(fg_color=T["surface"], border_color=T["border"])
-            # entry fg_color="transparent" oldugu icin sadece text_color guncelle
-            self._org_target_entry.configure(
+            self._safe(self._org_target_frame,
+                fg_color=T["surface"], border_color=T["border"])
+            self._safe(self._org_target_entry,
                 text_color=T["text_primary"],
-                placeholder_text_color=T["text_muted"]
-            )
-            self._org_btn_select.configure(
-                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"]
-            )
-            self._org_rules_scroll_frame.configure(fg_color=T["surface"], border_color=T["border"])
-            self._org_preview_frame.configure(fg_color=T["surface"], border_color=T["border"])
-            self._org_progress_bar.configure(fg_color=T["surface2"], progress_color=T["gold"])
-            self._org_status_label.configure(text_color=T["text_muted"])
+                placeholder_text_color=T["text_muted"])
+            self._safe(self._org_btn_select,
+                fg_color=T["gold"], hover_color=T["gold_light"],
+                text_color=T["bg"])
+            self._safe(self._org_rules_scroll_frame,
+                fg_color=T["surface"], border_color=T["border"])
+            # CTkScrollableFrame ic canvas'ini da elle guncelle
+            if hasattr(self, "_org_rules_scrollable"):
+                self._safe(self._org_rules_scrollable, fg_color=T["surface"])
+                self._patch_scrollable_canvas(self._org_rules_scrollable, T["surface"])
+            self._safe(self._org_preview_frame,
+                fg_color=T["surface"], border_color=T["border"])
+            self._safe(self._org_progress_bar,
+                fg_color=T["surface2"], progress_color=T["gold"])
+            self._safe(self._org_status_label, text_color=T["text_muted"])
 
-            # Butonlar
-            self._org_btn_preview.configure(
+            self._safe(self._org_btn_preview,
                 fg_color=T["surface2"], hover_color=T["hover"],
-                text_color=T["text_primary"], border_color=T["border"]
-            )
-            self._org_btn_execute.configure(
-                fg_color=T["gold"], hover_color=T["gold_light"], text_color=T["bg"]
-            )
+                text_color=T["text_primary"], border_color=T["border"])
+            self._safe(self._org_btn_execute,
+                fg_color=T["gold"], hover_color=T["gold_light"],
+                text_color=T["bg"])
 
             # Kural widget'lari
             for widgets in self._org_rule_widgets:
-                widgets["frame"].configure(fg_color=T["surface2"], border_color=T["border"])
-                widgets["folder_entry"].configure(
+                self._safe(widgets["frame"],
+                    fg_color=T["surface2"], border_color=T["border"])
+                self._safe(widgets["folder_entry"],
                     fg_color=T["surface"], text_color=T["text_primary"],
-                    border_color=T["border"]
-                )
-                widgets["keywords_entry"].configure(
+                    border_color=T["border"],
+                    placeholder_text_color=T["text_muted"])
+                self._safe(widgets["keywords_entry"],
                     fg_color=T["surface"], text_color=T["text_primary"],
-                    border_color=T["border"]
-                )
+                    border_color=T["border"],
+                    placeholder_text_color=T["text_muted"])
+                # Etiketler ve sil butonu (varsa)
+                for k in ("num_label", "folder_label", "kw_label"):
+                    if k in widgets:
+                        self._safe(widgets[k], text_color=T["gold"] if k == "num_label" else T["text_muted"])
+                if "del_btn" in widgets:
+                    self._safe(widgets["del_btn"],
+                        fg_color="transparent", hover_color=T["hover"],
+                        text_color=T["error"])
 
-            # Onizleme treeview
-            treeview_select_bg = "#2A2518" if self._theme_mode == "dark" else "#F0E8D0"
-            style = ttk.Style()
-            style.configure("Org.Treeview",
-                background=T["surface"], foreground=T["text_primary"],
-                fieldbackground=T["surface"])
-            style.configure("Org.Treeview.Heading",
-                background=T["surface2"], foreground=T["text_secondary"])
-            style.map("Org.Treeview",
-                background=[("selected", treeview_select_bg)],
-                foreground=[("selected", T["gold_light"])])
+            # Empty label
+            if hasattr(self, "_org_empty_label"):
+                self._safe(self._org_empty_label, text_color=T["text_secondary"])
 
             self._update_org_confidence_tags()
 
         except Exception:
             pass
 
-    # ══════════════════════════════════════════════════════
     # BUILD UI
-    # ══════════════════════════════════════════════════════
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -312,7 +565,7 @@ class VastarionApp(ctk.CTk):
         self._build_main_area()    # row 2
         self._build_status_bar()   # row 3
 
-    # ── HEADER ───────────────────────────────────────────
+    # HEADER
 
     def _build_header(self):
         T = self.T
@@ -332,22 +585,28 @@ class VastarionApp(ctk.CTk):
         text_block = ctk.CTkFrame(brand, fg_color="transparent")
         text_block.pack(side="left", anchor="s", pady=(0, 4))
 
-        ctk.CTkLabel(
+        scanner_lbl = ctk.CTkLabel(
             text_block, text="Scanner",
             font=ctk.CTkFont(family="Georgia", size=24, slant="italic"),
             text_color=T["gold"]
-        ).pack(anchor="w")
+        )
+        scanner_lbl.pack(anchor="w")
+        self._themable_add(scanner_lbl, "label_gold")
 
         # Ince gold cizgi (nav-logo::after efekti)
-        tk.Canvas(
+        gold_line = tk.Canvas(
             text_block, width=40, height=1, bg=T["gold"], highlightthickness=0
-        ).pack(anchor="w", pady=(3, 5))
+        )
+        gold_line.pack(anchor="w", pady=(3, 5))
+        self._themable_add(gold_line, "canvas_gold")
 
-        ctk.CTkLabel(
+        engine_lbl = ctk.CTkLabel(
             text_block, text="File Intelligence Engine",
             font=ctk.CTkFont(size=11, slant="italic"),
             text_color=T["text_muted"]
-        ).pack(anchor="w")
+        )
+        engine_lbl.pack(anchor="w")
+        self._themable_add(engine_lbl, "label_muted")
 
         # Sağ: Stats + Theme Toggle
         right_frame = ctk.CTkFrame(self._header_frame, fg_color="transparent")
@@ -372,12 +631,16 @@ class VastarionApp(ctk.CTk):
         )
         self.btn_theme.pack(side="left")
 
-        # Border bottom
-        tk.Canvas(
-            self._header_frame, height=1, bg=T["bg"], highlightthickness=0
-        ).grid(row=1, column=0, columnspan=2, sticky="ew")
+        # Theme toggle (alanini registry'ye eklemiyoruz — _refresh_all_theme zaten elden gecirir)
 
-    # ── SEARCH BAR ───────────────────────────────────────
+        # Border bottom
+        border_canvas = tk.Canvas(
+            self._header_frame, height=1, bg=T["bg"], highlightthickness=0
+        )
+        border_canvas.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self._themable_add(border_canvas, "canvas_bg")
+
+    # SEARCH BAR
 
     def _build_search_bar(self):
         T = self.T
@@ -392,11 +655,13 @@ class VastarionApp(ctk.CTk):
         self._search_frame.grid(row=0, column=0, sticky="ew")
         self._search_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(
+        lbl_ara = ctk.CTkLabel(
             self._search_frame, text="ARA",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=T["text_muted"], width=50
-        ).grid(row=0, column=0, padx=(16, 0), pady=14)
+        )
+        lbl_ara.grid(row=0, column=0, padx=(16, 0), pady=14)
+        self._themable_add(lbl_ara, "label_muted")
 
         self.search_var = ctk.StringVar()
         self.search_var.trace_add("write", self._on_search_typed)
@@ -434,7 +699,7 @@ class VastarionApp(ctk.CTk):
         )
         self.lbl_search_time.grid(row=0, column=3, padx=(0, 16), pady=14)
 
-    # ── MAIN AREA (TABS) ────────────────────────────────
+    # MAIN AREA (TABS)
 
     def _build_main_area(self):
         T = self.T
@@ -456,19 +721,36 @@ class VastarionApp(ctk.CTk):
         self._build_organizer_tab(self.tabs.add("Duzenle"))
         self._build_about_tab(self.tabs.add("Hakkinda"))
 
-    # ── RESULTS TAB ──────────────────────────────────────
+    # RESULTS TAB
 
     def _build_results_tab(self, parent):
         T = self.T
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
-        # Result count
+        # Üst satır: result count + export butonu
+        top_row = ctk.CTkFrame(parent, fg_color="transparent")
+        top_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top_row.grid_columnconfigure(0, weight=1)
+
         self.lbl_result_count = ctk.CTkLabel(
-            parent, text="Arama yapmak icin yukardaki kutuyu kullanin",
+            top_row, text="Arama yapmak icin yukardaki kutuyu kullanin",
             font=ctk.CTkFont(size=12), text_color=T["text_muted"], anchor="w"
         )
-        self.lbl_result_count.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.lbl_result_count.grid(row=0, column=0, sticky="w")
+
+        # CSV export butonu — sonuc varsa aktif olur
+        self.btn_export_csv = ctk.CTkButton(
+            top_row, text="⬇ CSV Disa Aktar",
+            font=ctk.CTkFont(size=11),
+            fg_color=T["surface2"], hover_color=T["hover"],
+            text_color=T["text_secondary"], border_width=1,
+            border_color=T["border"], corner_radius=6,
+            width=140, height=28, state="disabled",
+            command=self._export_results_csv
+        )
+        self.btn_export_csv.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._themable_add(self.btn_export_csv, "ghost_btn")
 
         # Treeview Card — surface bg + border = depth
         self._tree_card = ctk.CTkFrame(
@@ -573,7 +855,7 @@ class VastarionApp(ctk.CTk):
         self.txt_preview.grid(row=1, column=0, sticky="ew", padx=12, pady=(6, 10))
         self.txt_preview.configure(state="disabled")
 
-    # ── FOLDERS TAB ──────────────────────────────────────
+    # FOLDERS TAB
 
     def _build_folders_tab(self, parent):
         T = self.T
@@ -584,14 +866,16 @@ class VastarionApp(ctk.CTk):
         btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
         btn_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-        ctk.CTkButton(
+        btn_add_folder = ctk.CTkButton(
             btn_frame, text="Klasor Ekle",
             font=ctk.CTkFont(size=13),
             fg_color=T["surface2"], hover_color=T["hover"],
             text_color=T["text_secondary"], border_width=1,
             border_color=T["border"], corner_radius=6,
             width=140, height=36, command=self._add_folder
-        ).pack(side="left", padx=(0, 8))
+        )
+        btn_add_folder.pack(side="left", padx=(0, 8))
+        self._themable_add(btn_add_folder, "ghost_btn")
 
         self.btn_scan = ctk.CTkButton(
             btn_frame, text="Taramayi Baslat",
@@ -602,14 +886,16 @@ class VastarionApp(ctk.CTk):
         )
         self.btn_scan.pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(
+        btn_remove_folder = ctk.CTkButton(
             btn_frame, text="Secili Klasoru Kaldir",
             font=ctk.CTkFont(size=12),
             fg_color="transparent", hover_color=T["hover"],
             text_color=T["error"], border_width=1,
             border_color=T["border"], corner_radius=6,
             width=160, height=36, command=self._remove_folder
-        ).pack(side="right")
+        )
+        btn_remove_folder.pack(side="right")
+        self._themable_add(btn_remove_folder, "danger_btn")
 
         # Folder list card
         self._folder_list_card = ctk.CTkFrame(
@@ -654,16 +940,14 @@ class VastarionApp(ctk.CTk):
 
         self._refresh_folder_list()
 
-    # ══════════════════════════════════════════════════════
     # ORGANIZER TAB — Dosya Düzenleme
-    # ══════════════════════════════════════════════════════
 
     def _build_organizer_tab(self, parent):
         T = self.T
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(2, weight=1)  # Kurallar bölümü genişler
+        parent.grid_rowconfigure(3, weight=1)  # Kurallar bolumu genisler
 
-        # ── Üst Bilgi ────────────────────────────────────
+        # Üst Bilgi
         info_label = ctk.CTkLabel(
             parent,
             text="📂  Dosyalarinizi iceriklerine gore otomatik olarak klasorlere ayirin.\n"
@@ -673,8 +957,9 @@ class VastarionApp(ctk.CTk):
             justify="left", anchor="w"
         )
         info_label.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self._themable_add(info_label, "label_secondary")
 
-        # ── Hedef Klasör + Butonlar ──────────────────────
+        # Hedef Klasör + Butonlar
         top_bar = ctk.CTkFrame(parent, fg_color="transparent")
         top_bar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         top_bar.grid_columnconfigure(1, weight=1)
@@ -687,11 +972,13 @@ class VastarionApp(ctk.CTk):
         self._org_target_frame.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 8))
         self._org_target_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(
+        lbl_target = ctk.CTkLabel(
             self._org_target_frame, text="HEDEF KLASOR",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=T["text_muted"], width=110
-        ).grid(row=0, column=0, padx=(16, 4), pady=10)
+        )
+        lbl_target.grid(row=0, column=0, padx=(16, 4), pady=10)
+        self._themable_add(lbl_target, "label_muted")
 
         self._org_target_entry = ctk.CTkEntry(
             self._org_target_frame, textvariable=self._org_target_dir,
@@ -714,55 +1001,63 @@ class VastarionApp(ctk.CTk):
 
         # Butonlar satırı
         btn_row = ctk.CTkFrame(parent, fg_color="transparent")
-        btn_row.grid(row=1, column=0, sticky="ew", pady=(40, 4))
+        btn_row.grid(row=2, column=0, sticky="ew", pady=(8, 4))
 
-        ctk.CTkButton(
+        btn_template = ctk.CTkButton(
             btn_row, text="📋 Sablon Yukle",
             font=ctk.CTkFont(size=12),
             fg_color=T["surface2"], hover_color=T["hover"],
             text_color=T["text_secondary"], border_width=1,
             border_color=T["border"], corner_radius=6,
             width=140, height=34, command=self._org_load_template
-        ).pack(side="left", padx=(0, 6))
+        )
+        btn_template.pack(side="left", padx=(0, 6))
+        self._themable_add(btn_template, "ghost_btn")
 
-        ctk.CTkButton(
+        btn_add_rule = ctk.CTkButton(
             btn_row, text="+ Kural Ekle",
             font=ctk.CTkFont(size=12),
             fg_color=T["surface2"], hover_color=T["hover"],
             text_color=T["gold"], border_width=1,
             border_color=T["border"], corner_radius=6,
             width=120, height=34, command=self._org_add_rule
-        ).pack(side="left", padx=(0, 6))
+        )
+        btn_add_rule.pack(side="left", padx=(0, 6))
+        self._themable_add(btn_add_rule, "ghost_btn_gold")
 
-        ctk.CTkButton(
+        btn_clear = ctk.CTkButton(
             btn_row, text="Tumunu Temizle",
             font=ctk.CTkFont(size=11),
             fg_color="transparent", hover_color=T["hover"],
             text_color=T["error"], corner_radius=6,
             width=120, height=34, command=self._org_clear_rules
-        ).pack(side="left", padx=(0, 6))
+        )
+        btn_clear.pack(side="left", padx=(0, 6))
+        self._themable_add(btn_clear, "danger_btn_borderless")
 
         # Eşleşmeyenler checkbox
-        ctk.CTkCheckBox(
+        cb_unmatched = ctk.CTkCheckBox(
             btn_row, text='Eslesmeyen dosyalari "Diger" klasorune kopyala',
             font=ctk.CTkFont(size=11),
             text_color=T["text_secondary"],
             fg_color=T["gold"], hover_color=T["gold_light"],
             checkmark_color=T["bg"],
             variable=self._org_include_unmatched
-        ).pack(side="right")
+        )
+        cb_unmatched.pack(side="right")
+        self._themable_add(cb_unmatched, "checkbox")
 
-        # ── Kurallar Listesi ─────────────────────────────
+        # Kurallar Listesi
         self._org_rules_scroll_frame = ctk.CTkFrame(
             parent, fg_color=T["surface"], corner_radius=8,
             border_width=1, border_color=T["border"]
         )
-        self._org_rules_scroll_frame.grid(row=2, column=0, sticky="nsew", pady=(4, 8))
+        self._org_rules_scroll_frame.grid(row=3, column=0, sticky="nsew", pady=(4, 8))
         self._org_rules_scroll_frame.grid_columnconfigure(0, weight=1)
         self._org_rules_scroll_frame.grid_rowconfigure(0, weight=1)
 
         self._org_rules_scrollable = ctk.CTkScrollableFrame(
-            self._org_rules_scroll_frame, fg_color="transparent",
+            self._org_rules_scroll_frame, fg_color=T["surface"],
             corner_radius=0
         )
         self._org_rules_scrollable.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -775,13 +1070,13 @@ class VastarionApp(ctk.CTk):
                  "\"Sablon Yukle\" ile hazir kurallar yukleyebilir\n"
                  "veya \"+ Kural Ekle\" butonuyla kendiniz olusturabilirsiniz.",
             font=ctk.CTkFont(size=12),
-            text_color=T["text_muted"], justify="center"
+            text_color=T["text_secondary"], justify="center"
         )
         self._org_empty_label.grid(row=0, column=0, pady=40)
 
-        # ── Alt: Önizleme + Eylem ────────────────────────
+        # Alt: Önizleme + Eylem
         bottom = ctk.CTkFrame(parent, fg_color="transparent")
-        bottom.grid(row=3, column=0, sticky="ew", pady=(0, 0))
+        bottom.grid(row=4, column=0, sticky="ew", pady=(0, 0))
         bottom.grid_columnconfigure(0, weight=1)
 
         # Önizleme + Kopyalama butonları
@@ -888,7 +1183,7 @@ class VastarionApp(ctk.CTk):
         self._org_tree.tag_configure("conf_unmatched",
             foreground=T["text_muted"], background=bg)  # Gri
 
-    # ── Organizer: Kural Yönetimi ────────────────────────
+    # Organizer: Kural Yönetimi
 
     def _org_add_rule(self, folder_name="", keywords=""):
         """Yeni bir kural satırı ekler."""
@@ -907,18 +1202,20 @@ class VastarionApp(ctk.CTk):
         rule_frame.grid_columnconfigure(2, weight=1)
 
         # Kural numarası
-        ctk.CTkLabel(
+        num_label = ctk.CTkLabel(
             rule_frame, text=f"#{row_idx + 1}",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=T["gold"], width=30
-        ).grid(row=0, column=0, padx=(10, 4), pady=8)
+        )
+        num_label.grid(row=0, column=0, padx=(10, 4), pady=8)
 
         # Klasör adı
-        ctk.CTkLabel(
+        folder_label = ctk.CTkLabel(
             rule_frame, text="Klasor:",
             font=ctk.CTkFont(size=11),
             text_color=T["text_muted"], width=50
-        ).grid(row=0, column=1, padx=(4, 2), pady=8)
+        )
+        folder_label.grid(row=0, column=1, padx=(4, 2), pady=8)
 
         folder_var = ctk.StringVar(value=folder_name)
         folder_entry = ctk.CTkEntry(
@@ -934,11 +1231,12 @@ class VastarionApp(ctk.CTk):
         folder_entry.grid(row=0, column=2, sticky="w", padx=(2, 8), pady=8)
 
         # Anahtar kelimeler
-        ctk.CTkLabel(
+        kw_label = ctk.CTkLabel(
             rule_frame, text="Kelimeler:",
             font=ctk.CTkFont(size=11),
             text_color=T["text_muted"], width=70
-        ).grid(row=0, column=3, padx=(8, 2), pady=8)
+        )
+        kw_label.grid(row=0, column=3, padx=(8, 2), pady=8)
 
         kw_var = ctk.StringVar(value=keywords)
         kw_entry = ctk.CTkEntry(
@@ -971,6 +1269,10 @@ class VastarionApp(ctk.CTk):
             "folder_entry": folder_entry,
             "keywords_var": kw_var,
             "keywords_entry": kw_entry,
+            "num_label": num_label,
+            "folder_label": folder_label,
+            "kw_label": kw_label,
+            "del_btn": del_btn,
         }
         self._org_rule_widgets.append(widget_info)
 
@@ -1030,7 +1332,7 @@ class VastarionApp(ctk.CTk):
                 }))
         return rules
 
-    # ── Organizer: Önizleme ──────────────────────────────
+    # Organizer: Önizleme
 
     def _org_run_preview(self):
         """Dosyalari arka thread'de tarayip onizleme treeview'ina yukler."""
@@ -1102,7 +1404,7 @@ class VastarionApp(ctk.CTk):
         else:
             self._org_btn_execute.configure(state="disabled")
 
-    # ── Organizer: Kopyalama ─────────────────────────────
+    # Organizer: Kopyalama
 
     def _org_run_execute(self):
         """Onay aldıktan sonra kopyalama işlemini başlatır."""
@@ -1155,14 +1457,14 @@ class VastarionApp(ctk.CTk):
             rules, target, self._org_include_unmatched.get()
         )
 
-    # ── ABOUT TAB ─────────────────────────────────────────
+    # ABOUT TAB
 
     def _build_about_tab(self, parent):
         T = self.T
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
-        # ─── Top: Logo + Brand ───
+        # Top: Logo + Brand
         top = ctk.CTkFrame(parent, fg_color="transparent")
         top.grid(row=0, column=0, pady=(16, 0))
 
@@ -1170,22 +1472,28 @@ class VastarionApp(ctk.CTk):
         if logo:
             ctk.CTkLabel(top, text="", image=logo).pack(pady=(0, 8))
 
-        ctk.CTkLabel(
+        about_title = ctk.CTkLabel(
             top, text="VASTARION SCANNER",
             font=ctk.CTkFont(family="Georgia", size=20, weight="bold"),
             text_color=T["gold"]
-        ).pack(pady=(0, 2))
+        )
+        about_title.pack(pady=(0, 2))
+        self._themable_add(about_title, "label_gold")
 
-        ctk.CTkLabel(
+        about_subtitle = ctk.CTkLabel(
             top, text=f"File Intelligence Engine  —  v{APP_VERSION}",
             font=ctk.CTkFont(size=11, slant="italic"),
             text_color=T["text_muted"]
-        ).pack(pady=(0, 6))
+        )
+        about_subtitle.pack(pady=(0, 6))
+        self._themable_add(about_subtitle, "label_muted")
 
-        tk.Canvas(top, width=60, height=1, bg=T["gold_dim"],
-                  highlightthickness=0).pack(pady=(0, 10))
+        about_line = tk.Canvas(top, width=60, height=1, bg=T["gold_dim"],
+                  highlightthickness=0)
+        about_line.pack(pady=(0, 10))
+        self._themable_add(about_line, "canvas_gold_dim")
 
-        # ─── Bottom: Guide + Stats ───
+        # Bottom: Guide + Stats
         self.info_text = ctk.CTkTextbox(
             parent, font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=T["surface"], text_color=T["text_secondary"],
@@ -1195,15 +1503,17 @@ class VastarionApp(ctk.CTk):
         self.info_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         self.info_text.configure(state="disabled")
 
-        ctk.CTkButton(
+        btn_refresh_stats = ctk.CTkButton(
             parent, text="Istatistikleri Yenile",
             font=ctk.CTkFont(size=12),
             fg_color=T["surface2"], hover_color=T["hover"],
             text_color=T["text_secondary"], corner_radius=6,
             width=160, height=32, command=self._update_stats
-        ).grid(row=2, column=0, pady=(8, 4))
+        )
+        btn_refresh_stats.grid(row=2, column=0, pady=(8, 4))
+        self._themable_add(btn_refresh_stats, "ghost_btn")
 
-    # ── STATUS BAR ───────────────────────────────────────
+    # STATUS BAR
 
     def _build_status_bar(self):
         T = self.T
@@ -1228,17 +1538,20 @@ class VastarionApp(ctk.CTk):
         )
         self.lbl_status.pack(side="left")
 
-        # Right: watcher
+        # Right: watcher (watchdog modu mu, polling mi?)
+        try:
+            from core.watcher import _HAS_WATCHDOG
+            wmode = "anlik" if _HAS_WATCHDOG else "30s"
+        except Exception:
+            wmode = "30s"
         self.lbl_watcher = ctk.CTkLabel(
-            self._status_frame, text="● Watcher aktif",
+            self._status_frame, text=f"● Watcher aktif ({wmode})",
             font=ctk.CTkFont(size=11),
             text_color=T["success"], anchor="e"
         )
         self.lbl_watcher.grid(row=0, column=2, sticky="e", padx=(0, 24), pady=4)
 
-    # ══════════════════════════════════════════════════════
     # SEARCH
-    # ══════════════════════════════════════════════════════
 
     def _on_search_typed(self, *args):
         if self._search_after_id:
@@ -1262,6 +1575,7 @@ class VastarionApp(ctk.CTk):
             self.lbl_result_count.configure(
                 text="En az 2 karakter girin", text_color=T["text_muted"])
             self.lbl_search_time.configure(text="")
+            self._safe(self.btn_export_csv, state="disabled")
             return
 
         # Arama gecmisine ekle
@@ -1273,11 +1587,15 @@ class VastarionApp(ctk.CTk):
         if result["count"] == 0:
             self.lbl_result_count.configure(
                 text=f'"{query}" icin sonuc bulunamadi', text_color=T["error"])
+            self._safe(self.btn_export_csv, state="disabled")
             return
 
         self._all_results = result["results"]
         self.lbl_result_count.configure(
             text=f'"{query}" icin {result["count"]} sonuc', text_color=T["gold"])
+
+        # Export butonu artik aktif
+        self._safe(self.btn_export_csv, state="normal")
 
         # Lazy loading: sadece ilk 50'yi yukle
         self._load_next_batch()
@@ -1360,6 +1678,78 @@ class VastarionApp(ctk.CTk):
     def _clear_history(self):
         """Arama gecmisini temizler."""
         self._search_history.clear()
+
+    # EXPORT
+
+    def _export_results_csv(self):
+        """Mevcut arama sonuclarini UTF-8 CSV olarak kaydet.
+
+        UTF-8 BOM ile yazilir ki Excel'de Turkce karakterler bozulmasin.
+        Snippet'lar tek satira indirgenir, virgul ve tirnak escape edilir.
+        """
+        if not self._all_results:
+            return
+
+        from tkinter import filedialog
+        import csv
+
+        query = self.search_var.get().strip()
+        default_name = f"vastarion_{query[:30] or 'sonuclar'}.csv"
+        # Dosya adindaki yasak karakterleri temizle
+        for ch in '<>:"/\\|?*':
+            default_name = default_name.replace(ch, "_")
+
+        filepath = filedialog.asksaveasfilename(
+            title="CSV olarak kaydet",
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV (Excel uyumlu)", "*.csv"), ("Tum dosyalar", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            # utf-8-sig → Excel'in UTF-8 BOM ile dogru acmasi icin
+            with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+                writer.writerow([
+                    "Dosya Adi", "Eslesme", "Klasor", "Tur", "Boyut (byte)",
+                    "Degisiklik Tarihi", "Tam Yol"
+                ])
+                for r in self._all_results:
+                    snippet = (r.get("snippet") or "").replace("\n", " ").strip()
+                    writer.writerow([
+                        r.get("filename", ""),
+                        snippet,
+                        r.get("directory", ""),
+                        r.get("ext", ""),
+                        r.get("size", "") or "",
+                        r.get("modified", "") or "",
+                        r.get("filepath", ""),
+                    ])
+
+            count = len(self._all_results)
+            self.lbl_status.configure(
+                text=f"CSV kaydedildi: {count} satir → {os.path.basename(filepath)}")
+
+            # Klasoru acmayi teklif et
+            open_it = messagebox.askyesno(
+                "CSV Kaydedildi",
+                f"{count} sonuc basariyla kaydedildi:\n{filepath}\n\n"
+                f"Dosyanin bulundugu klasoru acmak ister misiniz?"
+            )
+            if open_it:
+                folder = os.path.dirname(filepath)
+                if sys.platform == "win32":
+                    os.startfile(folder)
+                else:
+                    os.system(f'xdg-open "{folder}"')
+        except Exception as e:
+            log.error(f"CSV export hatasi: {e}")
+            messagebox.showerror(
+                "CSV Kaydedilemedi",
+                f"Dosya yazilirken hata olustu:\n\n{e}"
+            )
 
     def _on_tree_select(self, event=None):
         T = self.T
@@ -1452,14 +1842,12 @@ class VastarionApp(ctk.CTk):
             if idx == -1:
                 self.txt_preview.insert("end", text[pos:])
                 break
-            # Eslesmeden onceki kisim (normal)
             if idx > pos:
                 self.txt_preview.insert("end", text[pos:idx])
-            # Eslesen kisim (gold highlight)
             self.txt_preview.insert("end", text[idx:idx+len(query)], "highlight")
             pos = idx + len(query)
 
-    # ── HOVER ────────────────────────────────────────────
+    # HOVER
 
     def _on_tree_hover(self, event):
         item = self.tree.identify_row(event.y)
@@ -1499,7 +1887,7 @@ class VastarionApp(ctk.CTk):
                 pass
             self._folder_hover_idx = None
 
-    # ── FILE OPERATIONS ──────────────────────────────────
+    # FILE OPERATIONS
 
     def _get_selected_path(self):
         sel = self.tree.selection()
@@ -1511,14 +1899,20 @@ class VastarionApp(ctk.CTk):
     def _open_file(self, event=None):
         path = self._get_selected_path()
         if path and os.path.exists(path):
-            os.startfile(path) if sys.platform == "win32" else os.system(f'xdg-open "{path}"')
+            if sys.platform == "win32":
+                os.startfile(path)
+            else:
+                os.system(f'xdg-open "{path}"')
 
     def _open_folder(self):
         path = self._get_selected_path()
         if path:
             folder = os.path.dirname(path)
             if os.path.exists(folder):
-                os.startfile(folder) if sys.platform == "win32" else os.system(f'xdg-open "{folder}"')
+                if sys.platform == "win32":
+                    os.startfile(folder)
+                else:
+                    os.system(f'xdg-open "{folder}"')
 
     def _copy_path(self):
         path = self._get_selected_path()
@@ -1534,7 +1928,7 @@ class VastarionApp(ctk.CTk):
         finally:
             self.ctx_menu.grab_release()
 
-    # ── FOLDER MANAGEMENT ────────────────────────────────
+    # FOLDER MANAGEMENT
 
     def _add_folder(self):
         from tkinter import filedialog
@@ -1568,7 +1962,7 @@ class VastarionApp(ctk.CTk):
         self.progress.set(0)
         self.worker.start(dirs)
 
-    # ── QUEUE ────────────────────────────────────────────
+    # QUEUE
 
     def _process_queue(self):
         try:
@@ -1620,7 +2014,6 @@ class VastarionApp(ctk.CTk):
                                  (f", {errors} hata" if errors else ""),
                             text_color=self.T["success"]
                         )
-                        # Hedef klasörü aç
                         target = self._org_target_dir.get().strip()
                         if target and os.path.exists(target):
                             open_it = messagebox.askyesno(
@@ -1637,7 +2030,7 @@ class VastarionApp(ctk.CTk):
             pass
         self.after(150, self._process_queue)
 
-    # ── STATS ────────────────────────────────────────────
+    # STATS
 
     def _update_stats(self):
         stats = self.db.get_stats()
@@ -1650,59 +2043,57 @@ class VastarionApp(ctk.CTk):
         self.info_text.delete("1.0", "end")
 
         ins = self.info_text.insert
+        sep = "-" * 50
 
-        # ── Kullanim Kilavuzu ──
         ins("end", "\n")
         ins("end", "   NASIL KULLANILIR?\n")
-        ins("end", "   " + "─" * 50 + "\n\n")
+        ins("end", "   " + sep + "\n\n")
         ins("end", "   1. KLASORLER sekmesinden taranacak klasorleri ekleyin\n")
-        ins("end", "      (Ornek: Belgelerim, Masaustu, Downloads)\n\n")
-        ins("end", "   2. \"Taramayi Baslat\" butonuna basin\n")
-        ins("end", "      PDF, Word, Excel, TXT dosyalarinin icerigi okunur\n\n")
+        ins("end", "   2. Taramayi Baslat butonuna basin\n")
         ins("end", "   3. Yukardaki arama kutusuna yazip dosya arayin\n")
-        ins("end", "      Dosya adi veya icerik uzerinden arama yapar\n\n")
-        ins("end", "   4. DUZENLE sekmesinden dosyalarinizi otomatik\n")
-        ins("end", "      kategorilere ayirabilirsiniz\n")
-        ins("end", "      (Sablon yukle → Onizle → Kopyala)\n\n")
+        ins("end", "   4. DUZENLE sekmesinden dosyalari otomatik kategorize edin\n")
+        ins("end", "   5. Sonuclari CSV olarak Excel'e disa aktarabilirsiniz\n\n")
 
         ins("end", "   DESTEKLENEN DOSYA TURLERI\n")
-        ins("end", "   " + "─" * 50 + "\n\n")
-        ins("end", "   .pdf   .docx   .xlsx   .txt   .csv\n")
-        ins("end", "   .py    .js     .html   .css   .json   .md\n\n")
+        ins("end", "   " + sep + "\n\n")
+        ins("end", "   .pdf  .docx  .xlsx  .txt  .csv  .md\n")
+        ins("end", "   .py   .js    .html  .css  .json\n\n")
 
         ins("end", "   OZELLIKLER\n")
-        ins("end", "   " + "─" * 50 + "\n\n")
-        ins("end", "   ● Turkce karakter destegi (I/i, S/s, O/o vb.)\n")
-        ins("end", "   ● Dosya izleyici — her 30 sn. otomatik guncelleme\n")
-        ins("end", "   ● Akilli esleme — spesifik kelimeler daha yuksek puan\n")
-        ins("end", "   ● Yesil = kesin eslesme, turuncu = olasi eslesme\n")
-        ins("end", "   ● Orijinal dosyalar yerinde kalir, sadece kopyalama\n\n")
+        ins("end", "   " + sep + "\n\n")
+        ins("end", "   - Turkce karakter destegi\n")
+        ins("end", "   - Anlik veya 30sn dosya izleyici\n")
+        ins("end", "   - Akilli esleme + guvenilirlik renkleri\n")
+        ins("end", "   - Orijinal dosyalar yerinde kalir (sadece kopyalama)\n")
+        ins("end", "   - CSV disa aktarma\n\n")
 
-        # ── Istatistikler ──
         ins("end", "   ISTATISTIKLER\n")
-        ins("end", "   " + "─" * 50 + "\n\n")
+        ins("end", "   " + sep + "\n\n")
         ins("end", f"   Toplam Dosya          {total:,}\n")
         ins("end", f"   Izlenen Klasor        {dirs_count}\n")
-        ins("end", f"   Watcher               Aktif (30s)\n")
+        try:
+            from core.watcher import _HAS_WATCHDOG
+            wmode = "Aktif (anlik)" if _HAS_WATCHDOG else "Aktif (30s)"
+        except Exception:
+            wmode = "Aktif"
+        ins("end", f"   Watcher               {wmode}\n")
         ins("end", f"   Veritabani            {self.db.db_path}\n")
 
         if stats["by_extension"]:
             ins("end", "\n\n   DOSYA DAGILIMI\n")
-            ins("end", "   " + "─" * 50 + "\n\n")
+            ins("end", "   " + sep + "\n\n")
             max_c = max(stats["by_extension"].values(), default=1)
             for ext, count in sorted(stats["by_extension"].items(), key=lambda x: -x[1]):
                 bar_len = int(count / max(max_c, 1) * 20)
-                bar = "█" * bar_len + "░" * (20 - bar_len)
+                bar = "#" * bar_len + "." * (20 - bar_len)
                 pct = count / max(total, 1) * 100
                 ins("end", f"   {ext:8s}  {bar}  {count:>5,}  ({pct:.1f}%)\n")
 
-        ins("end", "\n\n   " + "─" * 50 + "\n")
+        ins("end", "\n\n   " + sep + "\n")
         ins("end", f"   Vastarion Scanner v{APP_VERSION}\n")
         ins("end", "   github.com/callmeouz/vastarion-scanner\n")
 
         self.info_text.configure(state="disabled")
-
-    # ── CLEANUP ──────────────────────────────────────────
 
     def _on_close(self):
         log.info("Uygulama kapatiliyor")
